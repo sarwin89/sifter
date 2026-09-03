@@ -58,3 +58,8 @@ packages = ["sifter"]
 [[tool.mypy.overrides]]
 module = ["pandas", "pandas.*", "plotly", "plotly.*"]
 ignore_missing_imports = true
+
+[tool.coverage.run]
+# The wheel force-includes the already-tested app/streamlit_app.py under this
+# package name; omit that generated duplicate rather than count the same code twice.
+omit = ["*/sifter/_streamlit_app.py"]
