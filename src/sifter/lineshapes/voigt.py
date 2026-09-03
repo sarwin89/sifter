@@ -41,14 +41,11 @@ def voigt_fwhm(*, sigma: float, gamma: float) -> float:
     gaussian_width = gaussian_fwhm(sigma)
     lorentzian_width = lorentzian_fwhm(gamma)
     return float(
-        0.5346 * lorentzian_width
-        + np.sqrt(0.2166 * lorentzian_width**2 + gaussian_width**2)
+        0.5346 * lorentzian_width + np.sqrt(0.2166 * lorentzian_width**2 + gaussian_width**2)
     )
 
 
-def _validate_profile_parameters(
-    *, area: float, center: float, sigma: float, gamma: float
-) -> None:
+def _validate_profile_parameters(*, area: float, center: float, sigma: float, gamma: float) -> None:
     if not np.isfinite(area) or area < 0:
         raise ValueError("area must be finite and nonnegative")
     if not np.isfinite(center):

@@ -134,4 +134,3 @@ def _evaluate_peak(x: NDArray[np.float64], peak: SyntheticPeak) -> NDArray[np.fl
 def _require_positive(value: float | None, name: str) -> None:
     if value is None or not np.isfinite(value) or value <= 0:
         raise ValueError(f"{name} must be finite and positive")
-

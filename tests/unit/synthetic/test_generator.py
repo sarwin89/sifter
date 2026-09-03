@@ -8,12 +8,8 @@ def test_seeded_generation_is_reproducible_and_preserves_truth() -> None:
     x = np.linspace(1.0, 2.0, 501)
     peaks = (SyntheticPeak("voigt", area=1.0, center=1.5, sigma=0.03, gamma=0.01),)
 
-    first, truth_a = make_spectrum(
-        x=x, peaks=peaks, noise="gaussian", snr=50.0, seed=7
-    )
-    second, truth_b = make_spectrum(
-        x=x, peaks=peaks, noise="gaussian", snr=50.0, seed=7
-    )
+    first, truth_a = make_spectrum(x=x, peaks=peaks, noise="gaussian", snr=50.0, seed=7)
+    second, truth_b = make_spectrum(x=x, peaks=peaks, noise="gaussian", snr=50.0, seed=7)
 
     assert np.array_equal(first.intensity, second.intensity)
     assert truth_a.peaks == truth_b.peaks == peaks
@@ -74,9 +70,7 @@ def test_gaussian_noise_uses_declared_rms_snr() -> None:
     x = np.linspace(-1.0, 1.0, 10_001)
     peak = SyntheticPeak("gaussian", area=1.0, center=0.0, sigma=0.1)
 
-    _, truth = make_spectrum(
-        x=x, peaks=(peak,), noise="gaussian", snr=25.0, seed=12
-    )
+    _, truth = make_spectrum(x=x, peaks=(peak,), noise="gaussian", snr=25.0, seed=12)
 
     expected = float(np.sqrt(np.mean(truth.peak_signal**2)) / 25.0)
     assert truth.noise_standard_deviation == pytest.approx(expected)

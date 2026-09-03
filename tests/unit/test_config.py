@@ -30,9 +30,6 @@ def test_autofit_config_has_conservative_defaults() -> None:
         ({"random_seed": -1}, "random_seed"),
     ],
 )
-def test_autofit_config_rejects_invalid_settings(
-    kwargs: dict[str, object], message: str
-) -> None:
+def test_autofit_config_rejects_invalid_settings(kwargs: dict[str, object], message: str) -> None:
     with pytest.raises(ValueError, match=message):
         AutofitConfig(**kwargs)
-

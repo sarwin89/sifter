@@ -12,4 +12,3 @@ __all__ = [
     "voigt",
     "voigt_fwhm",
 ]
-

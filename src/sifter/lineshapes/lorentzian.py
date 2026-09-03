@@ -4,9 +4,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 
-def lorentzian(
-    x: ArrayLike, *, area: float, center: float, gamma: float
-) -> NDArray[np.float64]:
+def lorentzian(x: ArrayLike, *, area: float, center: float, gamma: float) -> NDArray[np.float64]:
     """Evaluate an area-normalized Lorentzian profile."""
     _validate_profile_parameters(area=area, center=center, gamma=gamma)
     values = np.asarray(x, dtype=np.float64)
@@ -30,4 +28,3 @@ def _validate_profile_parameters(*, area: float, center: float, gamma: float) ->
         raise ValueError("center must be finite")
     if not np.isfinite(gamma) or gamma <= 0:
         raise ValueError("gamma must be finite and positive")
-

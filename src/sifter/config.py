@@ -49,4 +49,3 @@ class AutofitConfig:
             raise ValueError("bootstrap_samples must be 100, 250, or 1000")
         if isinstance(self.random_seed, bool) or self.random_seed < 0:
             raise ValueError("random_seed must be a nonnegative integer")
-

@@ -35,9 +35,9 @@ def test_gaussian_height_and_fwhm_follow_sigma_convention() -> None:
     width = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma
 
     height = gaussian(np.array([center]), area=area, center=center, sigma=sigma)[0]
-    half_height = gaussian(
-        np.array([center + width / 2.0]), area=area, center=center, sigma=sigma
-    )[0]
+    half_height = gaussian(np.array([center + width / 2.0]), area=area, center=center, sigma=sigma)[
+        0
+    ]
 
     assert height == pytest.approx(area / (sigma * np.sqrt(2.0 * np.pi)))
     assert half_height == pytest.approx(height / 2.0)
@@ -50,9 +50,7 @@ def test_lorentzian_height_and_fwhm_follow_gamma_hwhm_convention() -> None:
     center = -0.5
 
     height = lorentzian(np.array([center]), area=area, center=center, gamma=gamma)[0]
-    half_height = lorentzian(
-        np.array([center + gamma]), area=area, center=center, gamma=gamma
-    )[0]
+    half_height = lorentzian(np.array([center + gamma]), area=area, center=center, gamma=gamma)[0]
 
     assert height == pytest.approx(area / (np.pi * gamma))
     assert half_height == pytest.approx(height / 2.0)

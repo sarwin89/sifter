@@ -4,9 +4,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 
-def gaussian(
-    x: ArrayLike, *, area: float, center: float, sigma: float
-) -> NDArray[np.float64]:
+def gaussian(x: ArrayLike, *, area: float, center: float, sigma: float) -> NDArray[np.float64]:
     """Evaluate an area-normalized Gaussian profile."""
     _validate_profile_parameters(area=area, center=center, sigma=sigma)
     values = np.asarray(x, dtype=np.float64)
@@ -31,4 +29,3 @@ def _validate_profile_parameters(*, area: float, center: float, sigma: float) ->
         raise ValueError("center must be finite")
     if not np.isfinite(sigma) or sigma <= 0:
         raise ValueError("sigma must be finite and positive")
-

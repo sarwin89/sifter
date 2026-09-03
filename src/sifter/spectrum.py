@@ -126,4 +126,3 @@ def _require_finite(values: NDArray[np.float64], name: str) -> None:
 
 def _freeze(values: NDArray[np.float64]) -> None:
     values.setflags(write=False)
-
