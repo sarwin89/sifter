@@ -2,7 +2,8 @@
 
 import numpy as np
 
-from sifter.config import PeakShape
+from sifter.config import AutofitConfig, PeakShape
+from sifter.models import ModelSpec, build_candidates
 from sifter.spectrum import Spectrum
 from sifter.synthetic import SyntheticPeak, SyntheticTruth, make_spectrum
 
@@ -54,3 +55,7 @@ def easy_two_peak_spectrum(*, seed: int = 42) -> tuple[Spectrum, SyntheticTruth]
         seed=seed,
     )
 
+
+def one_gaussian_spec(spectrum: Spectrum) -> ModelSpec:
+    config = AutofitConfig(max_peaks=1, shapes=("gaussian",), baseline_orders=(0,))
+    return build_candidates(spectrum, (), None, config)[0]
