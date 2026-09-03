@@ -25,4 +25,3 @@ jobs:
       - run: python -m mypy src/sifter
       - run: python -m pytest --cov=sifter --cov-report=term-missing --cov-fail-under=90
       - run: python -m build
-
