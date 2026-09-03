@@ -1,0 +1,224 @@
+"""Public orchestration for deterministic spectral model inference."""
+
+from dataclasses import replace
+from importlib.metadata import version
+
+import numpy as np
+
+from sifter.baseline import asls_baseline
+from sifter.config import AutofitConfig, PeakShape
+from sifter.detection import detect_peak_proposals
+from sifter.diagnostics import diagnose_fit, residual_diagnostics
+from sifter.fitting import (
+    CandidateFailure,
+    CandidateFit,
+    bootstrap_uncertainty,
+    covariance_uncertainty,
+    fit_candidate,
+)
+from sifter.fourier import analyze_fourier
+from sifter.models import ParameterLayout, build_candidates
+from sifter.reporting import DiagnosticWarning, diagnostic_warning
+from sifter.result import (
+    AnalysisSettings,
+    FitResult,
+    FittedPeak,
+    ModelResult,
+    frozen_array,
+    frozen_metadata,
+)
+from sifter.selection import CandidateScore, rank_candidates, score_candidate
+from sifter.spectrum import Spectrum
+
+
+class AnalysisError(RuntimeError):
+    """Terminal analysis failure retaining every candidate-level failure."""
+
+    def __init__(self, code: str, failures: tuple[CandidateFailure, ...]) -> None:
+        self.code = code
+        self.failures = failures
+        super().__init__(f"{code}: {len(failures)} candidate fits failed")
+
+
+def autofit(
+    spectrum: Spectrum,
+    *,
+    config: AutofitConfig | None = None,
+    max_peaks: int | None = None,
+    shapes: tuple[PeakShape, ...] | None = None,
+    fourier: bool | None = None,
+    random_seed: int | None = None,
+) -> FitResult:
+    """Run initialization, candidate fitting, ranking, and uncertainty."""
+    settings = _resolved_config(
+        config,
+        max_peaks=max_peaks,
+        shapes=shapes,
+        fourier=fourier,
+        random_seed=random_seed,
+    )
+    baseline = asls_baseline(spectrum.intensity)
+    adjusted = spectrum.intensity - baseline
+    proposal_spectrum = Spectrum(
+        spectrum.x,
+        adjusted,
+        sigma=spectrum.sigma,
+        x_name=spectrum.x_name,
+        x_unit=spectrum.x_unit,
+        intensity_name=spectrum.intensity_name,
+        metadata=spectrum.metadata,
+    )
+    proposals = detect_peak_proposals(proposal_spectrum, max_peaks=settings.max_peaks)
+    fourier_result = (
+        analyze_fourier(
+            spectrum,
+            adjusted,
+            interpolate_nonuniform=settings.interpolate_nonuniform_fft,
+        )
+        if settings.fourier
+        else None
+    )
+    candidates = build_candidates(spectrum, proposals, fourier_result, settings)
+    seed_sequences = np.random.SeedSequence(settings.random_seed).spawn(len(candidates))
+    fit_results: list[CandidateFit | CandidateFailure] = []
+    for candidate, seed_sequence in zip(candidates, seed_sequences, strict=True):
+        candidate_seed = int(seed_sequence.generate_state(1, dtype=np.uint32)[0])
+        fit_results.append(fit_candidate(spectrum, candidate, starts=8, seed=candidate_seed))
+
+    failures = tuple(result for result in fit_results if isinstance(result, CandidateFailure))
+    successful = {result.spec: result for result in fit_results if isinstance(result, CandidateFit)}
+    if not successful:
+        raise AnalysisError("NO_VALID_CANDIDATE", failures)
+
+    scores = tuple(score_candidate(result, spectrum) for result in fit_results)
+    ranked = rank_candidates(scores, settings.shapes)
+    best_score = next(
+        score
+        for score in ranked
+        if score.status == "valid" and score.aicc is not None and score.bic is not None
+    )
+    best_fit = successful[best_score.spec]
+    diagnostics = residual_diagnostics(best_fit.residuals)
+    fit_warnings = list(diagnose_fit(best_fit, spectrum))
+    fit_warnings.extend(_analysis_warnings(best_score, fourier_result))
+    uncertainty = (
+        covariance_uncertainty(best_fit, spectrum)
+        if settings.uncertainty == "covariance"
+        else bootstrap_uncertainty(
+            best_fit,
+            spectrum,
+            samples=settings.bootstrap_samples,
+            seed=settings.random_seed,
+        )
+    )
+    if uncertainty.warning is not None:
+        fit_warnings.append(uncertainty.warning)
+
+    assert best_score.aicc is not None and best_score.bic is not None
+    assert best_score.rss is not None and best_score.rmse is not None
+    layout = ParameterLayout(
+        best_fit.spec.shape,
+        best_fit.spec.peak_count,
+        best_fit.spec.baseline_order,
+    )
+    model = ModelResult(
+        shape=best_fit.spec.shape,
+        peak_count=best_fit.spec.peak_count,
+        baseline_order=best_fit.spec.baseline_order,
+        parameter_names=layout.names,
+        parameters=frozen_array(best_fit.parameters),
+        lower_bounds=best_fit.spec.lower_bounds,
+        upper_bounds=best_fit.spec.upper_bounds,
+        peaks=tuple(
+            FittedPeak(
+                area=peak.area,
+                center=peak.center,
+                sigma=peak.sigma,
+                gamma=peak.gamma,
+            )
+            for peak in best_fit.peaks
+        ),
+        fitted=frozen_array(best_fit.fitted),
+        baseline=frozen_array(best_fit.baseline),
+        components=frozen_array(best_fit.components),
+        residuals=frozen_array(best_fit.residuals),
+        rss=best_score.rss,
+        rmse=best_score.rmse,
+        aicc=best_score.aicc,
+        bic=best_score.bic,
+        parameter_count=best_score.parameter_count,
+        observation_count=spectrum.x.size,
+        reduced_chi_squared=best_score.reduced_chi_squared,
+    )
+    return FitResult(
+        schema_version="sifter.fit_result.v1",
+        settings=AnalysisSettings(
+            max_peaks=settings.max_peaks,
+            shapes=settings.shapes,
+            baseline_orders=settings.baseline_orders,
+            fourier=settings.fourier,
+            interpolate_nonuniform_fft=settings.interpolate_nonuniform_fft,
+            uncertainty=settings.uncertainty,
+            bootstrap_samples=settings.bootstrap_samples,
+            random_seed=settings.random_seed,
+        ),
+        source_metadata=frozen_metadata(spectrum.metadata),
+        x=frozen_array(spectrum.x),
+        intensity=frozen_array(spectrum.intensity),
+        sigma=None if spectrum.sigma is None else frozen_array(spectrum.sigma),
+        x_name=spectrum.x_name,
+        x_unit=spectrum.x_unit,
+        intensity_name=spectrum.intensity_name,
+        best_model=model,
+        candidates=ranked,
+        fourier=fourier_result,
+        residual_diagnostics=diagnostics,
+        uncertainty=uncertainty,
+        warnings=tuple(fit_warnings),
+        observation_count=spectrum.x.size,
+        sifter_version=version("sifter"),
+    )
+
+
+def _resolved_config(
+    config: AutofitConfig | None,
+    *,
+    max_peaks: int | None,
+    shapes: tuple[PeakShape, ...] | None,
+    fourier: bool | None,
+    random_seed: int | None,
+) -> AutofitConfig:
+    resolved = AutofitConfig() if config is None else config
+    if max_peaks is not None:
+        resolved = replace(resolved, max_peaks=max_peaks)
+    if shapes is not None:
+        resolved = replace(resolved, shapes=shapes)
+    if fourier is not None:
+        resolved = replace(resolved, fourier=fourier)
+    if random_seed is not None:
+        resolved = replace(resolved, random_seed=random_seed)
+    return resolved
+
+
+def _analysis_warnings(
+    score: CandidateScore, fourier_result: object | None
+) -> tuple[DiagnosticWarning, ...]:
+    warnings = [
+        diagnostic_warning(
+            code,
+            "model-selection criterion indicates an analysis limitation",
+            context={"shape": score.shape, "peak_count": score.peak_count},
+        )
+        for code in score.warnings
+    ]
+    if fourier_result is not None:
+        warning_code = getattr(fourier_result, "warning_code", None)
+        if isinstance(warning_code, str):
+            warnings.append(
+                diagnostic_warning(
+                    warning_code,
+                    "Fourier diagnostics were limited by the sampling grid or signal range",
+                    context={},
+                )
+            )
+    return tuple(warnings)
