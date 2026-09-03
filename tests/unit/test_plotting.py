@@ -25,4 +25,6 @@ def test_plot_contains_data_fit_components_residuals_and_fourier() -> None:
     }
     assert {trace.name for trace in figures["residuals"].data} == {"Residuals"}
     assert {trace.name for trace in figures["fourier"].data} >= {"Fourier magnitude"}
+    assert all(figure.layout.paper_bgcolor == "#fbfaf5" for figure in figures.values())
+    assert all(figure.layout.font.color == "#17231f" for figure in figures.values())
     assert render_fit_png(result).startswith(b"\x89PNG\r\n\x1a\n")
