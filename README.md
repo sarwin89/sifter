@@ -16,6 +16,17 @@ python -m pip install -e ".[dev,gui]"
 
 The implementation follows the reviewed tasks in [docs/superpowers/plans/2026-09-03-sifter-v0.1.md](docs/superpowers/plans/2026-09-03-sifter-v0.1.md).
 
+## Local GUI
+
+Install the GUI dependencies and launch the local application:
+
+```bash
+python -m pip install -e ".[gui]"
+sifter-gui
+```
+
+The browser interface runs on `localhost`; SIFTER does not upload spectra or send telemetry.
+
 ## Privacy
 
 Real experimental spectra must never be committed. Keep them in the ignored `data/` or `private/` directories. Public examples, tests, and benchmarks will use deterministic synthetic spectra only.
