@@ -4,7 +4,13 @@
 
 SIFTER is a local-first scientific Python project for reproducible decomposition of one-dimensional spectra. Version 0.1 will fit Gaussian, Lorentzian, and Voigt peak models in the original data domain while using Fourier-domain information only as an auxiliary diagnostic and initializer.
 
-The project is currently in its architecture phase. The approved v0.1 design is documented in [docs/superpowers/specs/2026-09-03-sifter-v0.1-design.md](docs/superpowers/specs/2026-09-03-sifter-v0.1-design.md).
+Fourier evidence initializes and diagnoses fits; only the original observations determine parameters and model scores. SIFTER reports uncertainty and identifiability limitations rather than claiming resolution the data cannot support.
+
+## Install
+
+```bash
+python -m pip install -e ".[gui]"
+```
 
 ## Development
 
@@ -26,6 +32,29 @@ sifter-gui
 ```
 
 The browser interface runs on `localhost`; SIFTER does not upload spectra or send telemetry.
+
+## Python API
+
+```python
+from sifter import Spectrum, autofit
+
+spectrum = Spectrum(x, intensity, x_name="Raman shift", x_unit="cm⁻¹")
+result = autofit(
+    spectrum,
+    max_peaks=6,
+    shapes=("gaussian", "lorentzian", "voigt"),
+    fourier=True,
+    random_seed=42,
+)
+
+print(result.best_model.peaks)
+print(result.candidates[0].delta_bic)
+result.to_dataframe().to_csv("sifter.fit.csv", index=False)
+```
+
+Warnings use stable codes and plain-language messages. Treat poor-resolution, near-bound, correlation, truncation, and unavailable-uncertainty warnings as limits on interpretation—not optimizer noise to hide.
+
+Read the [scientific method](docs/scientific-method.md), [result schema](docs/result-schema.md), [privacy policy](docs/privacy.md), and [benchmark guide](benchmarks/README.md).
 
 ## Privacy
 
