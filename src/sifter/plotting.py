@@ -12,25 +12,40 @@ from sifter.result import FitResult
 def plot_result(result: FitResult) -> dict[str, go.Figure]:
     """Build decomposition, residual, and optional Fourier figures."""
     fit_figure = go.Figure()
-    fit_figure.add_scatter(x=result.x, y=result.intensity, mode="markers", name="Observed")
+    fit_figure.add_scatter(
+        x=result.x,
+        y=result.intensity,
+        mode="markers",
+        name="Observed",
+        marker={"color": "#66746e", "size": 5},
+    )
     fit_figure.add_scatter(
         x=result.x,
         y=result.best_model.fitted,
         mode="lines",
         name="Recommended fit",
+        line={"color": "#176b55", "width": 3},
     )
     fit_figure.add_scatter(
         x=result.x,
         y=result.best_model.baseline,
         mode="lines",
         name="Baseline",
+        line={"color": "#8d6e35", "dash": "dash"},
     )
+    component_colors = ("#b9822f", "#b65e4a", "#5f7f8a", "#7c6b91", "#597347", "#9a725d")
     for index, component in enumerate(result.best_model.components, start=1):
-        fit_figure.add_scatter(x=result.x, y=component, mode="lines", name=f"Peak {index}")
+        fit_figure.add_scatter(
+            x=result.x,
+            y=component,
+            mode="lines",
+            name=f"Peak {index}",
+            line={"color": component_colors[(index - 1) % len(component_colors)], "width": 2},
+        )
     fit_figure.update_layout(
         xaxis_title=_axis_title(result.x_name, result.x_unit),
         yaxis_title=result.intensity_name,
-        template="plotly_white",
+        **_light_workbench_layout(),
     )
 
     residual_figure = go.Figure()
@@ -39,12 +54,13 @@ def plot_result(result: FitResult) -> dict[str, go.Figure]:
         y=result.best_model.residuals,
         mode="markers",
         name="Residuals",
+        marker={"color": "#176b55", "size": 6},
     )
     residual_figure.add_hline(y=0.0, line_dash="dash")
     residual_figure.update_layout(
         xaxis_title=_axis_title(result.x_name, result.x_unit),
         yaxis_title="fit - observed",
-        template="plotly_white",
+        **_light_workbench_layout(),
     )
     figures = {"fit": fit_figure, "residuals": residual_figure}
     if result.fourier is not None:
@@ -54,11 +70,12 @@ def plot_result(result: FitResult) -> dict[str, go.Figure]:
             y=result.fourier.magnitude,
             mode="lines",
             name="Fourier magnitude",
+            line={"color": "#176b55", "width": 2},
         )
         fourier_figure.update_layout(
             xaxis_title="frequency",
             yaxis_title="magnitude",
-            template="plotly_white",
+            **_light_workbench_layout(),
         )
         figures["fourier"] = fourier_figure
     return figures
@@ -104,3 +121,14 @@ def render_fit_png(result: FitResult, *, width: int = 1600, height: int = 900) -
 
 def _axis_title(name: str, unit: str | None) -> str:
     return name if unit is None else f"{name} ({unit})"
+
+
+def _light_workbench_layout() -> dict[str, object]:
+    return {
+        "template": "plotly_white",
+        "paper_bgcolor": "#fbfaf5",
+        "plot_bgcolor": "#fbfaf5",
+        "font": {"color": "#17231f", "family": "Aptos, Trebuchet MS, sans-serif"},
+        "xaxis": {"gridcolor": "#d9ddd4", "zerolinecolor": "#9aaa9f"},
+        "yaxis": {"gridcolor": "#d9ddd4", "zerolinecolor": "#9aaa9f"},
+    }
