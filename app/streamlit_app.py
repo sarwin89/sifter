@@ -241,11 +241,16 @@ def _styles() -> None:
           --mineral: oklch(45% 0.09 165);
           --line: oklch(81% 0.026 120);
         }
-        .stApp { background: var(--paper); color: var(--ink); }
+        .stApp {
+          background: #f5f2e9;
+          background: var(--paper);
+          color: #17231f;
+          color: var(--ink);
+          font-family: Aptos, "Trebuchet MS", sans-serif;
+        }
         [data-testid="stMainBlockContainer"] { max-width: 86rem; padding-top: 3rem; }
         h1, h2, h3 { font-family: Georgia, "Times New Roman", serif; color: var(--ink); }
         h1 { font-size: 4rem; letter-spacing: -0.055em; margin: 0; }
-        html, body, [class*="st-"] { font-family: Aptos, "Trebuchet MS", sans-serif; }
         .eyebrow { color: var(--mineral); font-size: .78rem; font-weight: 700;
                    letter-spacing: .18em; margin-bottom: .2rem; }
         .lede { font-family: Georgia, "Times New Roman", serif; font-size: 1.3rem;
@@ -253,10 +258,35 @@ def _styles() -> None:
         [data-testid="stMetricValue"], [data-testid="stDataFrame"] {
           font-variant-numeric: tabular-nums;
         }
+        [data-testid="stWidgetLabel"] p,
+        [data-testid="stCaptionContainer"] p,
+        [data-testid="stMetricLabel"] p,
+        [data-testid="stMetricValue"] {
+          color: #29483d !important;
+        }
+        div[data-baseweb="select"] > div,
+        [data-testid="stNumberInputContainer"] {
+          background: #fbfaf5 !important;
+          border-color: #9aaa9f !important;
+        }
+        div[data-baseweb="select"] *,
+        [data-testid="stNumberInputContainer"] input {
+          color: #17231f !important;
+        }
+        span[data-baseweb="tag"] { background: #2f705d !important; }
+        span[data-baseweb="tag"] * { color: #f8f5ec !important; }
+        [data-testid="stCheckbox"] [data-checked="true"] {
+          background-color: #176b55 !important;
+          border-color: #176b55 !important;
+        }
         div[data-testid="stFileUploaderDropzone"] { border-color: var(--line); }
         .stButton button[kind="primary"], .stFormSubmitButton button[kind="primary"] {
-          background: var(--mineral); min-height: 2.75rem; border-radius: .2rem;
+          background: #176b55 !important;
+          border-color: #176b55 !important;
+          min-height: 2.75rem;
+          border-radius: .2rem;
         }
+        button[kind="primary"] p { color: #f8f5ec !important; }
         @media (max-width: 700px) {
           h1 { font-size: 3rem; }
           [data-testid="stMainBlockContainer"] { padding-top: 2rem; }
