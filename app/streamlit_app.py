@@ -26,6 +26,12 @@ HEADER_LABELS: dict[str, HeaderMode] = {
     "Present": "present",
     "Absent": "absent",
 }
+SEARCH_MODE_LABELS = {
+    "Fast": "fast",
+    "Standard": "standard",
+    "Thorough": "thorough",
+    "Exhaustive": "exhaustive",
+}
 
 
 def main() -> None:
@@ -123,7 +129,7 @@ def main() -> None:
 
     st.markdown("### 03 · Configure analysis")
     with st.form("analysis_settings"):
-        controls = st.columns((1, 2, 1))
+        controls = st.columns((1, 1, 2, 1))
         with controls[0]:
             max_peaks = int(
                 st.number_input(
@@ -136,13 +142,21 @@ def main() -> None:
                 )
             )
         with controls[1]:
+            search_mode_label = st.selectbox(
+                "Search mode",
+                tuple(SEARCH_MODE_LABELS),
+                index=1,
+                key="search_mode",
+                help="Standard screens a detector-centered search; Exhaustive fits every count.",
+            )
+        with controls[2]:
             selected_shapes = st.multiselect(
                 "Peak shapes",
                 tuple(SHAPE_LABELS),
                 default=tuple(SHAPE_LABELS),
                 key="shapes",
             )
-        with controls[2]:
+        with controls[3]:
             fourier_enabled = st.checkbox(
                 "Fourier assistance",
                 value=True,
@@ -209,6 +223,7 @@ def main() -> None:
             )
             config = AutofitConfig(
                 max_peaks=max_peaks,
+                search_mode=SEARCH_MODE_LABELS[search_mode_label],
                 shapes=tuple(SHAPE_LABELS[label] for label in selected_shapes),
                 baseline_orders=tuple(selected_baselines),
                 fourier=fourier_enabled,

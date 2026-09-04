@@ -6,6 +6,7 @@ from typing import Literal, TypeAlias
 JSONScalar: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
 PeakShape: TypeAlias = Literal["gaussian", "lorentzian", "voigt"]
+SearchMode: TypeAlias = Literal["fast", "standard", "thorough", "exhaustive"]
 UncertaintyMode: TypeAlias = Literal["covariance", "bootstrap"]
 
 SUPPORTED_SHAPES: frozenset[str] = frozenset({"gaussian", "lorentzian", "voigt"})
@@ -24,6 +25,7 @@ class AutofitConfig:
     """Validated settings for automatic model generation and fitting."""
 
     max_peaks: int = 10
+    search_mode: SearchMode = "standard"
     shapes: tuple[PeakShape, ...] = ("gaussian", "lorentzian", "voigt")
     baseline_orders: tuple[int, ...] = (0, 1, 2)
     fourier: bool = True
@@ -35,6 +37,8 @@ class AutofitConfig:
     def __post_init__(self) -> None:
         if isinstance(self.max_peaks, bool) or self.max_peaks < 1:
             raise ValueError("max_peaks must be a positive integer")
+        if self.search_mode not in {"fast", "standard", "thorough", "exhaustive"}:
+            raise ValueError("search_mode must be fast, standard, thorough, or exhaustive")
         if not self.shapes:
             raise ValueError("at least one peak shape is required")
         if len(set(self.shapes)) != len(self.shapes):

@@ -12,13 +12,18 @@ def test_one_failed_candidate_does_not_abort_analysis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fail_only_voigt(
-        spectrum: Spectrum, spec: ModelSpec, *, starts: int, seed: int
+        spectrum: Spectrum,
+        spec: ModelSpec,
+        *,
+        starts: int,
+        seed: int,
+        **kwargs: object,
     ) -> CandidateFit | CandidateFailure:
         if spec.shape == "voigt":
             return CandidateFailure(spec, "ALL_STARTS_FAILED", "controlled failure", starts)
-        return real_fit_candidate(spectrum, spec, starts=starts, seed=seed)
+        return real_fit_candidate(spectrum, spec, starts=starts, seed=seed, **kwargs)
 
-    monkeypatch.setattr("sifter.api.fit_candidate", fail_only_voigt)
+    monkeypatch.setattr("sifter.search.screening.fit_candidate", fail_only_voigt)
     result = autofit(
         easy_one_peak_spectrum(),
         config=AutofitConfig(
@@ -37,11 +42,17 @@ def test_no_valid_candidate_preserves_failures_in_analysis_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def always_fail(
-        spectrum: Spectrum, spec: ModelSpec, *, starts: int, seed: int
+        spectrum: Spectrum,
+        spec: ModelSpec,
+        *,
+        starts: int,
+        seed: int,
+        **kwargs: object,
     ) -> CandidateFailure:
+        del spectrum, seed, kwargs
         return CandidateFailure(spec, "ALL_STARTS_FAILED", "controlled failure", starts)
 
-    monkeypatch.setattr("sifter.api.fit_candidate", always_fail)
+    monkeypatch.setattr("sifter.search.screening.fit_candidate", always_fail)
 
     with pytest.raises(AnalysisError) as captured:
         autofit(

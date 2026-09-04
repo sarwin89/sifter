@@ -1,9 +1,8 @@
 """Validated resource policies for staged spectral-model search."""
 
 from dataclasses import dataclass
-from typing import Literal
 
-SearchMode = Literal["fast", "standard", "thorough", "exhaustive"]
+from sifter.config import SearchMode
 
 
 @dataclass(frozen=True, slots=True)

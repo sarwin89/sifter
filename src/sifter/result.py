@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from sifter.config import JSONScalar, PeakShape, UncertaintyMode
+from sifter.config import JSONScalar, PeakShape, SearchMode, UncertaintyMode
 from sifter.diagnostics import DiagnosticWarning, ResidualDiagnostics
 from sifter.fitting import ParameterUncertainty
 from sifter.fourier import FourierDiagnostics
@@ -33,6 +33,7 @@ class AnalysisSettings:
     uncertainty: UncertaintyMode
     bootstrap_samples: int
     random_seed: int
+    search_mode: SearchMode = "standard"
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +130,7 @@ class FitResult:
             "sifter_version": self.sifter_version,
             "settings": {
                 "max_peaks": self.settings.max_peaks,
+                "search_mode": self.settings.search_mode,
                 "shapes": self.settings.shapes,
                 "baseline_orders": self.settings.baseline_orders,
                 "fourier": self.settings.fourier,

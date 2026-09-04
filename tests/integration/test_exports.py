@@ -28,6 +28,7 @@ def test_json_is_standard_compliant_and_excludes_private_paths() -> None:
     decoded = json.loads(encoded, parse_constant=_reject_nonstandard_constant)
 
     assert decoded["schema_version"] == "sifter.fit_result.v1"
+    assert decoded["settings"]["search_mode"] == "standard"
     assert decoded["best_model"]["rmse"] is None
     assert "NONFINITE_VALUE_OMITTED" in {warning["code"] for warning in decoded["warnings"]}
     assert private_root not in encoded

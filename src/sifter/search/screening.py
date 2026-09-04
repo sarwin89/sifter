@@ -7,7 +7,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from sifter.config import PeakShape
-from sifter.fitting import CandidateFailure, CandidateFit, fit_candidate
+from sifter.fitting import CandidateFailure, CandidateFit, FailureCode, fit_candidate
 from sifter.models import ModelSpec
 from sifter.search.policy import SearchPolicy
 from sifter.selection import unweighted_information_criteria
@@ -28,7 +28,8 @@ class ScreeningRecord:
     converged_starts: int
     total_evaluations: int
     elapsed_seconds: float
-    failure_code: str | None
+    failure_code: FailureCode | None
+    failure_message: str | None = None
 
 
 def screen_candidates(
@@ -129,6 +130,28 @@ def refine_finalists(
     return tuple(results)
 
 
+def screening_failures(
+    records: tuple[ScreeningRecord, ...],
+) -> tuple[CandidateFailure, ...]:
+    """Recover complete failed rows for final comparison and terminal errors."""
+    failures: list[CandidateFailure] = []
+    for record in records:
+        if record.failure_code is None:
+            continue
+        failures.append(
+            CandidateFailure(
+                spec=record.spec,
+                code=record.failure_code,
+                message=record.failure_message or "candidate failed during screening",
+                attempted_starts=record.attempted_starts,
+                converged_starts=record.converged_starts,
+                total_evaluations=record.total_evaluations,
+                elapsed_seconds=record.elapsed_seconds,
+            )
+        )
+    return tuple(failures)
+
+
 def _screening_record(
     result: CandidateFit | CandidateFailure,
     spectrum: Spectrum,
@@ -144,6 +167,7 @@ def _screening_record(
             total_evaluations=result.total_evaluations,
             elapsed_seconds=result.elapsed_seconds,
             failure_code=result.code,
+            failure_message=result.message,
         )
     return ScreeningRecord(
         spec=result.spec,
@@ -155,6 +179,7 @@ def _screening_record(
         total_evaluations=result.total_evaluations,
         elapsed_seconds=result.elapsed_seconds,
         failure_code=None,
+        failure_message=None,
     )
 
 

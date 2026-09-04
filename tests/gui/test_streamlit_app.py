@@ -26,6 +26,7 @@ def test_upload_exposes_confirmable_defaults_but_waits_for_analyze() -> None:
     assert app.selectbox(key="intensity_column").value == "intensity"
     assert app.number_input(key="max_peaks").value == 10
     assert app.number_input(key="max_peaks").max == 10
+    assert app.selectbox(key="search_mode").value == "Standard"
     assert app.multiselect(key="shapes").value == ["Gaussian", "Lorentzian", "Voigt"]
     assert app.checkbox(key="fourier_enabled").value is True
     assert app.number_input(key="random_seed").value == 42

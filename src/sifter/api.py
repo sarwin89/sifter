@@ -5,7 +5,7 @@ from importlib.metadata import version
 
 import numpy as np
 
-from sifter.config import AutofitConfig, PeakShape
+from sifter.config import AutofitConfig, PeakShape, SearchMode
 from sifter.diagnostics import diagnose_fit, residual_diagnostics
 from sifter.fitting import (
     CandidateFailure,
@@ -14,7 +14,7 @@ from sifter.fitting import (
     covariance_uncertainty,
     fit_candidate,
 )
-from sifter.models import ParameterLayout, build_candidates
+from sifter.models import ParameterLayout, build_candidates_for_counts
 from sifter.reporting import DiagnosticWarning, diagnostic_warning
 from sifter.result import (
     AnalysisSettings,
@@ -24,7 +24,15 @@ from sifter.result import (
     frozen_array,
     frozen_metadata,
 )
-from sifter.search import preprocess_spectrum
+from sifter.search import (
+    initial_peak_counts,
+    preprocess_spectrum,
+    refine_finalists,
+    retain_diverse_finalists,
+    screen_candidates,
+    screening_failures,
+    search_policy,
+)
 from sifter.selection import CandidateScore, rank_candidates, score_candidate
 from sifter.spectrum import Spectrum
 
@@ -46,6 +54,7 @@ def autofit(
     shapes: tuple[PeakShape, ...] | None = None,
     fourier: bool | None = None,
     random_seed: int | None = None,
+    search_mode: SearchMode | None = None,
 ) -> FitResult:
     """Run initialization, candidate fitting, ranking, and uncertainty."""
     settings = _resolved_config(
@@ -54,19 +63,54 @@ def autofit(
         shapes=shapes,
         fourier=fourier,
         random_seed=random_seed,
+        search_mode=search_mode,
     )
     preprocessing = preprocess_spectrum(spectrum, settings)
-    candidates = build_candidates(
+    policy = search_policy(settings.search_mode)
+    peak_counts = initial_peak_counts(
+        preprocessing.detection,
+        policy,
+        max_peaks=settings.max_peaks,
+    )
+    candidates = build_candidates_for_counts(
         spectrum,
         preprocessing.proposals,
         preprocessing.fourier,
         settings,
+        peak_counts=peak_counts,
     )
-    seed_sequences = np.random.SeedSequence(settings.random_seed).spawn(len(candidates))
-    fit_results: list[CandidateFit | CandidateFailure] = []
-    for candidate, seed_sequence in zip(candidates, seed_sequences, strict=True):
-        candidate_seed = int(seed_sequence.generate_state(1, dtype=np.uint32)[0])
-        fit_results.append(fit_candidate(spectrum, candidate, starts=8, seed=candidate_seed))
+    if policy.exhaustive:
+        seed_sequences = np.random.SeedSequence(settings.random_seed).spawn(len(candidates))
+        fit_results: list[CandidateFit | CandidateFailure] = []
+        for candidate, seed_sequence in zip(candidates, seed_sequences, strict=True):
+            candidate_seed = int(seed_sequence.generate_state(1, dtype=np.uint32)[0])
+            fit_results.append(
+                fit_candidate(
+                    spectrum,
+                    candidate,
+                    starts=policy.refinement_starts,
+                    seed=candidate_seed,
+                    max_nfev=policy.refinement_max_nfev,
+                )
+            )
+    else:
+        assert policy.finalist_limit is not None
+        screening = screen_candidates(
+            spectrum,
+            candidates,
+            policy,
+            seed=settings.random_seed,
+        )
+        finalists = retain_diverse_finalists(screening, limit=policy.finalist_limit)
+        fit_results = list(screening_failures(screening))
+        fit_results.extend(
+            refine_finalists(
+                spectrum,
+                finalists,
+                policy,
+                seed=settings.random_seed,
+            )
+        )
 
     failures = tuple(result for result in fit_results if isinstance(result, CandidateFailure))
     successful = {result.spec: result for result in fit_results if isinstance(result, CandidateFit)}
@@ -144,6 +188,7 @@ def autofit(
             uncertainty=settings.uncertainty,
             bootstrap_samples=settings.bootstrap_samples,
             random_seed=settings.random_seed,
+            search_mode=settings.search_mode,
         ),
         source_metadata=frozen_metadata(spectrum.metadata),
         x=frozen_array(spectrum.x),
@@ -170,6 +215,7 @@ def _resolved_config(
     shapes: tuple[PeakShape, ...] | None,
     fourier: bool | None,
     random_seed: int | None,
+    search_mode: SearchMode | None,
 ) -> AutofitConfig:
     resolved = AutofitConfig() if config is None else config
     if max_peaks is not None:
@@ -180,6 +226,8 @@ def _resolved_config(
         resolved = replace(resolved, fourier=fourier)
     if random_seed is not None:
         resolved = replace(resolved, random_seed=random_seed)
+    if search_mode is not None:
+        resolved = replace(resolved, search_mode=search_mode)
     return resolved
 
 

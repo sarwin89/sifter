@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from sifter import AutofitConfig, autofit
 from tests.helpers import easy_one_peak_spectrum, easy_two_peak_spectrum
@@ -81,3 +82,27 @@ def test_config_selects_covariance_or_bootstrap_uncertainty() -> None:
     assert covariance.uncertainty.method == "covariance"
     assert bootstrap.uncertainty.method == "bootstrap"
     assert bootstrap.uncertainty.successful_bootstraps == 100
+
+
+def test_standard_search_matches_exhaustive_winner_with_fewer_final_candidates() -> None:
+    spectrum, _ = easy_two_peak_spectrum(seed=21)
+    common = dict(
+        max_peaks=5,
+        shapes=("gaussian",),
+        baseline_orders=(0,),
+        fourier=False,
+        random_seed=31,
+    )
+
+    standard = autofit(
+        spectrum,
+        config=AutofitConfig(**common, search_mode="standard"),
+    )
+    exhaustive = autofit(
+        spectrum,
+        config=AutofitConfig(**common, search_mode="exhaustive"),
+    )
+
+    assert standard.best_model.peak_count == exhaustive.best_model.peak_count == 2
+    assert standard.best_model.bic == pytest.approx(exhaustive.best_model.bic, abs=1e-6)
+    assert len(standard.candidates) < len(exhaustive.candidates)
