@@ -23,7 +23,7 @@ BOOTSTRAP_SUCCESS_FRACTION = 0.8
 class AutofitConfig:
     """Validated settings for automatic model generation and fitting."""
 
-    max_peaks: int = 6
+    max_peaks: int = 10
     shapes: tuple[PeakShape, ...] = ("gaussian", "lorentzian", "voigt")
     baseline_orders: tuple[int, ...] = (0, 1, 2)
     fourier: bool = True

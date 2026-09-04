@@ -129,8 +129,8 @@ def main() -> None:
                 st.number_input(
                     "Maximum peaks",
                     min_value=1,
-                    max_value=6,
-                    value=6,
+                    max_value=10,
+                    value=10,
                     step=1,
                     key="max_peaks",
                 )

@@ -41,7 +41,7 @@ from sifter import Spectrum, autofit
 spectrum = Spectrum(x, intensity, x_name="Raman shift", x_unit="cm⁻¹")
 result = autofit(
     spectrum,
-    max_peaks=6,
+    max_peaks=10,
     shapes=("gaussian", "lorentzian", "voigt"),
     fourier=True,
     random_seed=42,

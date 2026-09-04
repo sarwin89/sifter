@@ -46,6 +46,9 @@ class CandidateFailure:
     code: FailureCode
     message: str
     attempted_starts: int
+    converged_starts: int = 0
+    total_evaluations: int = 0
+    elapsed_seconds: float = 0.0
 
 
 def fit_candidate(
@@ -143,6 +146,9 @@ def fit_candidate(
             code=code,
             message=message,
             attempted_starts=attempted_starts,
+            converged_starts=converged_starts,
+            total_evaluations=total_evaluations,
+            elapsed_seconds=perf_counter() - started_at,
         )
 
     parameters = np.asarray(best_result.x, dtype=np.float64)

@@ -6,7 +6,7 @@ from sifter.config import AutofitConfig
 def test_autofit_config_has_conservative_defaults() -> None:
     config = AutofitConfig()
 
-    assert config.max_peaks == 6
+    assert config.max_peaks == 10
     assert config.shapes == ("gaussian", "lorentzian", "voigt")
     assert config.baseline_orders == (0, 1, 2)
     assert config.fourier

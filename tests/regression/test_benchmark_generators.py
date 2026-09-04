@@ -2,6 +2,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from benchmarks.benchmark_candidate_runtime import (
+    benchmark_candidate_runtime,
+    make_runtime_case,
+)
 from benchmarks.benchmark_peak_count import benchmark_peak_count
 from benchmarks.benchmark_width_recovery import benchmark_width_recovery
 from benchmarks.generate_resolution_grid import generate_resolution_grid
@@ -52,3 +56,44 @@ def test_small_repeated_seed_benchmarks_report_aggregate_recovery_metrics() -> N
     assert peak_counts["correct"].mean() >= 0.75
     assert {"seed", "shape", "true_fwhm", "recovered_fwhm", "relative_error"} <= set(widths.columns)
     assert widths["relative_error"].max() < 0.15
+
+
+def test_runtime_cases_cover_deterministic_three_and_ten_peak_candidates() -> None:
+    three_spectrum, three_spec = make_runtime_case(3)
+    ten_spectrum, ten_spec = make_runtime_case(10)
+
+    assert three_spec.peak_count == 3
+    assert ten_spec.peak_count == 10
+    assert three_spectrum.metadata["benchmark_case"] == "candidate-runtime-3-peak"
+    assert ten_spectrum.metadata["benchmark_case"] == "candidate-runtime-10-peak"
+
+
+def test_runtime_benchmark_reports_work_without_writing_by_default(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    writes: list[Path] = []
+    monkeypatch.setattr(
+        pd.DataFrame,
+        "to_csv",
+        lambda self, path, *args, **kwargs: writes.append(Path(path)),
+    )
+
+    table = benchmark_candidate_runtime(
+        peak_counts=(3,),
+        repeats=1,
+        starts=1,
+        max_nfev=500,
+    )
+
+    assert not writes
+    assert {
+        "peak_count",
+        "repeat",
+        "status",
+        "attempted_starts",
+        "converged_starts",
+        "selected_evaluations",
+        "total_evaluations",
+        "elapsed_seconds",
+    } <= set(table.columns)
+    assert table.loc[0, "status"] == "converged"

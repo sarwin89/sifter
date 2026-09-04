@@ -70,6 +70,9 @@ def test_all_failed_starts_return_structured_failure(monkeypatch: pytest.MonkeyP
     assert isinstance(result, CandidateFailure)
     assert result.code == "ALL_STARTS_FAILED"
     assert result.attempted_starts == 3
+    assert result.converged_starts == 0
+    assert result.total_evaluations == 0
+    assert result.elapsed_seconds >= 0.0
     assert "controlled optimizer failure" in result.message
 
 
@@ -164,6 +167,8 @@ def test_budget_exhaustion_is_only_retained_for_explicit_screening(
     )
 
     assert isinstance(final_result, CandidateFailure)
+    assert final_result.total_evaluations == 14
+    assert final_result.elapsed_seconds >= 0.0
     assert isinstance(screening_result, CandidateFit)
     assert screening_result.status == "budget_exhausted"
     assert screening_result.attempted_starts == 2
