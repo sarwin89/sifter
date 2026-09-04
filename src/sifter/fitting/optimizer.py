@@ -1,6 +1,7 @@
 """SciPy least-squares adapter with candidate-level failure isolation."""
 
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Literal
 
 import numpy as np
@@ -12,11 +13,12 @@ from sifter.models import ModelSpec, ParameterLayout, PeakStart, evaluate_model
 from sifter.spectrum import Spectrum
 
 FailureCode = Literal["ALL_STARTS_FAILED", "NONFINITE_SOLUTION", "INVALID_DOF"]
+FitStatus = Literal["converged", "budget_exhausted"]
 
 
 @dataclass(frozen=True, slots=True)
 class CandidateFit:
-    """Best converged result for one candidate specification."""
+    """Best admissible result for one candidate specification."""
 
     spec: ModelSpec
     parameters: NDArray[np.float64]
@@ -29,6 +31,11 @@ class CandidateFit:
     jacobian: NDArray[np.float64]
     optimality: float
     evaluations: int
+    status: FitStatus = "converged"
+    attempted_starts: int = 1
+    converged_starts: int = 1
+    total_evaluations: int = 0
+    elapsed_seconds: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,8 +56,13 @@ def fit_candidate(
     seed: int = 42,
     max_nfev: int = 10_000,
     initial_parameters: ArrayLike | None = None,
+    allow_budget_exhausted: bool = False,
 ) -> CandidateFit | CandidateFailure:
-    """Fit one candidate and retain the best valid multistart result."""
+    """Fit one candidate and retain the best admissible multistart result.
+
+    Budget-exhausted results are failures unless screening code explicitly opts in.
+    Even when enabled, a converged start always outranks a provisional one.
+    """
     if isinstance(max_nfev, bool) or max_nfev < 1:
         raise ValueError("max_nfev must be a positive integer")
     layout = ParameterLayout(spec.shape, spec.peak_count, spec.baseline_order)
@@ -64,9 +76,15 @@ def fit_candidate(
 
     lower = np.asarray(spec.lower_bounds, dtype=np.float64)
     upper = np.asarray(spec.upper_bounds, dtype=np.float64)
-    best_result: OptimizeResult | None = None
-    best_objective = np.inf
+    best_converged: OptimizeResult | None = None
+    best_converged_objective = np.inf
+    best_provisional: OptimizeResult | None = None
+    best_provisional_objective = np.inf
     errors: list[str] = []
+    attempted_starts = 0
+    converged_starts = 0
+    total_evaluations = 0
+    started_at = perf_counter()
 
     def objective(parameters: NDArray[np.float64]) -> NDArray[np.float64]:
         residuals = evaluate_model(spectrum.x, parameters, spec).fitted - spectrum.intensity
@@ -79,6 +97,7 @@ def fit_candidate(
         initial_parameters=initial_parameters,
     )
     for start in start_vectors:
+        attempted_starts += 1
         try:
             result = least_squares(
                 objective,
@@ -91,16 +110,26 @@ def fit_candidate(
         except Exception as error:
             errors.append(str(error))
             continue
-        if not result.success:
+        total_evaluations += int(result.nfev)
+        is_budget_exhausted = int(result.status) == 0
+        if not result.success and not (allow_budget_exhausted and is_budget_exhausted):
             errors.append(str(result.message))
             continue
         if not np.isfinite(result.x).all() or not np.isfinite(result.fun).all():
             errors.append("optimizer returned a non-finite solution")
             continue
         objective_rss = float(np.dot(result.fun, result.fun))
-        if objective_rss < best_objective:
-            best_result = result
-            best_objective = objective_rss
+        if result.success:
+            converged_starts += 1
+            if objective_rss < best_converged_objective:
+                best_converged = result
+                best_converged_objective = objective_rss
+        elif objective_rss < best_provisional_objective:
+            best_provisional = result
+            best_provisional_objective = objective_rss
+
+    best_result = best_converged if best_converged is not None else best_provisional
+    status: FitStatus = "converged" if best_converged is not None else "budget_exhausted"
 
     if best_result is None:
         code: FailureCode = (
@@ -109,7 +138,12 @@ def fit_candidate(
             else "ALL_STARTS_FAILED"
         )
         message = errors[-1] if errors else "no optimizer start produced a result"
-        return CandidateFailure(spec=spec, code=code, message=message, attempted_starts=starts)
+        return CandidateFailure(
+            spec=spec,
+            code=code,
+            message=message,
+            attempted_starts=attempted_starts,
+        )
 
     parameters = np.asarray(best_result.x, dtype=np.float64)
     jacobian = np.asarray(best_result.jac, dtype=np.float64)
@@ -129,6 +163,11 @@ def fit_candidate(
         jacobian=_frozen(jacobian),
         optimality=float(best_result.optimality),
         evaluations=int(best_result.nfev),
+        status=status,
+        attempted_starts=attempted_starts,
+        converged_starts=converged_starts,
+        total_evaluations=total_evaluations,
+        elapsed_seconds=perf_counter() - started_at,
     )
 
 

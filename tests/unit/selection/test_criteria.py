@@ -75,6 +75,23 @@ def test_failed_candidate_remains_a_visible_unranked_row() -> None:
     assert row.failure_code == "ALL_STARTS_FAILED"
 
 
+def test_budget_exhausted_candidate_cannot_be_scored_as_final_evidence() -> None:
+    spectrum = easy_one_peak_spectrum()
+    provisional = replace(
+        _candidate_fit(spectrum, peak_count=1, residual_value=0.01),
+        status="budget_exhausted",
+        converged_starts=0,
+    )
+
+    row = score_candidate(provisional, spectrum)
+
+    assert row.status == "failed"
+    assert row.rss is None
+    assert row.aicc is None
+    assert row.bic is None
+    assert row.failure_code == "BUDGET_EXHAUSTED"
+
+
 def _candidate_fit(spectrum: Spectrum, *, peak_count: int, residual_value: float) -> CandidateFit:
     config = AutofitConfig(max_peaks=peak_count, shapes=("gaussian",), baseline_orders=(0,))
     spec = next(

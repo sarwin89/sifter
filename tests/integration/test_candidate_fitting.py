@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from scipy.optimize import OptimizeResult
 
 from sifter import AutofitConfig, Spectrum
 from sifter.fitting import CandidateFailure, CandidateFit, fit_candidate
@@ -126,3 +127,91 @@ def test_every_optimizer_start_receives_finite_evaluation_budget(
 
     assert isinstance(result, CandidateFailure)
     assert observed_budgets == [37, 37]
+
+
+def test_budget_exhaustion_is_only_retained_for_explicit_screening(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spectrum = easy_one_peak_spectrum()
+    spec = one_gaussian_spec(spectrum)
+
+    def exhaust_budget(
+        objective: object,
+        start: np.ndarray,
+        **kwargs: object,
+    ) -> OptimizeResult:
+        del objective, kwargs
+        return OptimizeResult(
+            success=False,
+            status=0,
+            message="The maximum number of function evaluations is exceeded.",
+            x=start,
+            fun=np.zeros(spectrum.x.size),
+            jac=np.ones((spectrum.x.size, start.size)),
+            optimality=1.0,
+            nfev=7,
+        )
+
+    monkeypatch.setattr("sifter.fitting.optimizer.least_squares", exhaust_budget)
+
+    final_result = fit_candidate(spectrum, spec, starts=2, max_nfev=7)
+    screening_result = fit_candidate(
+        spectrum,
+        spec,
+        starts=2,
+        max_nfev=7,
+        allow_budget_exhausted=True,
+    )
+
+    assert isinstance(final_result, CandidateFailure)
+    assert isinstance(screening_result, CandidateFit)
+    assert screening_result.status == "budget_exhausted"
+    assert screening_result.attempted_starts == 2
+    assert screening_result.converged_starts == 0
+    assert screening_result.total_evaluations == 14
+    assert screening_result.elapsed_seconds >= 0.0
+
+
+def test_converged_start_outranks_lower_rss_provisional_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spectrum = easy_one_peak_spectrum()
+    spec = one_gaussian_spec(spectrum)
+    calls = 0
+
+    def controlled_result(
+        objective: object,
+        start: np.ndarray,
+        **kwargs: object,
+    ) -> OptimizeResult:
+        nonlocal calls
+        del objective, kwargs
+        calls += 1
+        converged = calls == 2
+        return OptimizeResult(
+            success=converged,
+            status=1 if converged else 0,
+            message="converged" if converged else "evaluation budget exhausted",
+            x=start,
+            fun=np.full(spectrum.x.size, 0.2 if converged else 0.1),
+            jac=np.ones((spectrum.x.size, start.size)),
+            optimality=0.5,
+            nfev=3 if converged else 5,
+        )
+
+    monkeypatch.setattr("sifter.fitting.optimizer.least_squares", controlled_result)
+
+    result = fit_candidate(
+        spectrum,
+        spec,
+        starts=2,
+        max_nfev=5,
+        allow_budget_exhausted=True,
+    )
+
+    assert isinstance(result, CandidateFit)
+    assert result.status == "converged"
+    assert result.evaluations == 3
+    assert result.attempted_starts == 2
+    assert result.converged_starts == 1
+    assert result.total_evaluations == 8

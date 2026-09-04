@@ -69,7 +69,10 @@ def unweighted_information_criteria(*, n: int, p: int, rss: float) -> Informatio
 def score_candidate(result: CandidateFit | CandidateFailure, spectrum: Spectrum) -> CandidateScore:
     """Convert a fit or failure into one complete comparison row."""
     parameter_count = len(result.spec.lower_bounds)
-    if isinstance(result, CandidateFailure):
+    if isinstance(result, CandidateFailure) or result.status != "converged":
+        failure_code = (
+            result.code if isinstance(result, CandidateFailure) else "BUDGET_EXHAUSTED"
+        )
         return CandidateScore(
             spec=result.spec,
             status="failed",
@@ -83,7 +86,7 @@ def score_candidate(result: CandidateFit | CandidateFailure, spectrum: Spectrum)
             residual_variance=None,
             reduced_chi_squared=None,
             warnings=(),
-            failure_code=result.code,
+            failure_code=failure_code,
         )
 
     observation_count = spectrum.x.size
