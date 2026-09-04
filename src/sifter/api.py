@@ -25,11 +25,11 @@ from sifter.result import (
     frozen_metadata,
 )
 from sifter.search import (
+    adaptive_screening,
     initial_peak_counts,
     preprocess_spectrum,
     refine_finalists,
     retain_diverse_finalists,
-    screen_candidates,
     screening_failures,
     search_policy,
 )
@@ -72,14 +72,14 @@ def autofit(
         policy,
         max_peaks=settings.max_peaks,
     )
-    candidates = build_candidates_for_counts(
-        spectrum,
-        preprocessing.proposals,
-        preprocessing.fourier,
-        settings,
-        peak_counts=peak_counts,
-    )
     if policy.exhaustive:
+        candidates = build_candidates_for_counts(
+            spectrum,
+            preprocessing.proposals,
+            preprocessing.fourier,
+            settings,
+            peak_counts=peak_counts,
+        )
         seed_sequences = np.random.SeedSequence(settings.random_seed).spawn(len(candidates))
         fit_results: list[CandidateFit | CandidateFailure] = []
         for candidate, seed_sequence in zip(candidates, seed_sequences, strict=True):
@@ -95,12 +95,15 @@ def autofit(
             )
     else:
         assert policy.finalist_limit is not None
-        screening = screen_candidates(
+        adaptive = adaptive_screening(
             spectrum,
-            candidates,
+            preprocessing,
+            settings,
             policy,
+            initial_counts=peak_counts,
             seed=settings.random_seed,
         )
+        screening = adaptive.records
         finalists = retain_diverse_finalists(screening, limit=policy.finalist_limit)
         fit_results = list(screening_failures(screening))
         fit_results.extend(
