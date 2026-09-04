@@ -7,13 +7,25 @@ from sifter.search.preprocessing import (
     SearchPreprocessing,
     preprocess_spectrum,
 )
+from sifter.search.screening import (
+    ScreeningRecord,
+    ScreeningStatus,
+    refine_finalists,
+    retain_diverse_finalists,
+    screen_candidates,
+)
 
 __all__ = [
     "PeakDetectionSummary",
     "SearchMode",
     "SearchPolicy",
     "SearchPreprocessing",
+    "ScreeningRecord",
+    "ScreeningStatus",
     "initial_peak_counts",
     "preprocess_spectrum",
+    "refine_finalists",
+    "retain_diverse_finalists",
+    "screen_candidates",
     "search_policy",
 ]
