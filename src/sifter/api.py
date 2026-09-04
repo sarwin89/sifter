@@ -3,6 +3,8 @@
 from dataclasses import replace
 from importlib.metadata import version
 
+import numpy as np
+
 from sifter.config import AutofitConfig, PeakShape, SearchMode
 from sifter.diagnostics import diagnose_fit, residual_diagnostics
 from sifter.execution import build_fit_tasks, execute_fit_tasks
@@ -24,14 +26,17 @@ from sifter.result import (
     frozen_metadata,
 )
 from sifter.search import (
+    ScreeningRecord,
     adaptive_screening,
     initial_peak_counts,
     preprocess_spectrum,
     refine_finalists,
     retain_diverse_finalists,
+    screen_candidates,
     screening_failures,
     search_policy,
 )
+from sifter.search.windowing import build_windowed_candidates
 from sifter.selection import CandidateScore, rank_candidates, score_candidate
 from sifter.spectrum import Spectrum
 
@@ -111,6 +116,26 @@ def autofit(
             progress=progress,
         )
         screening = adaptive.records
+        windowed_candidates = build_windowed_candidates(
+            spectrum,
+            preprocessing,
+            settings,
+            policy,
+            seed=settings.random_seed,
+            workers=settings.workers,
+        )
+        if windowed_candidates:
+            emit_progress(progress, "screening", 0, len(windowed_candidates))
+            windowed_screening = screen_candidates(
+                spectrum,
+                windowed_candidates,
+                policy,
+                seed=_windowed_seed(settings.random_seed),
+                workers=settings.workers,
+                on_progress=progress_for_phase(progress, "screening"),
+            )
+            screening = (*screening, *windowed_screening)
+        screening = _deduplicated_screening(screening)
         finalists = retain_diverse_finalists(screening, limit=policy.finalist_limit)
         fit_results = list(screening_failures(screening))
         emit_progress(progress, "refinement", 0, len(finalists))
@@ -275,3 +300,29 @@ def _analysis_warnings(
                 )
             )
     return tuple(warnings)
+
+
+def _windowed_seed(seed: int) -> int:
+    return (seed + 1_048_583) % (2**32)
+
+
+def _deduplicated_screening(
+    records: tuple[ScreeningRecord, ...],
+) -> tuple[ScreeningRecord, ...]:
+    best_by_spec: dict[object, ScreeningRecord] = {}
+    order: list[object] = []
+    for record in records:
+        if record.spec not in best_by_spec:
+            order.append(record.spec)
+            best_by_spec[record.spec] = record
+            continue
+        previous = best_by_spec[record.spec]
+        if _screening_sort_value(record) < _screening_sort_value(previous):
+            best_by_spec[record.spec] = record
+    return tuple(best_by_spec[spec] for spec in order)
+
+
+def _screening_sort_value(record: ScreeningRecord) -> tuple[float, int]:
+    failed = 1 if record.screening_bic is None or record.parameters is None else 0
+    bic = np.inf if record.screening_bic is None else record.screening_bic
+    return bic, failed

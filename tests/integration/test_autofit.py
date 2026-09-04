@@ -2,6 +2,9 @@ import numpy as np
 import pytest
 
 from sifter import AutofitConfig, ProgressEvent, autofit
+from sifter.fitting import CandidateFit, ParameterUncertainty
+from sifter.models import ParameterLayout, build_candidates_for_counts
+from sifter.search import AdaptiveScreeningResult, ScreeningRecord
 from tests.helpers import easy_one_peak_spectrum, easy_two_peak_spectrum
 
 
@@ -149,3 +152,103 @@ def test_progress_events_cover_standard_search_phases() -> None:
     assert events[0] == ProgressEvent("preprocessing", 0, 1)
     assert events[-1] == ProgressEvent("completion", 1, 1)
     assert all(event.completed <= event.total for event in events)
+
+
+def test_standard_search_adds_windowed_candidates_before_global_refinement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sifter import api
+
+    spectrum, _ = easy_two_peak_spectrum(seed=30)
+    config = AutofitConfig(
+        max_peaks=2,
+        shapes=("gaussian",),
+        baseline_orders=(0,),
+        fourier=False,
+        random_seed=101,
+    )
+    one_peak = build_candidates_for_counts(spectrum, (), None, config, peak_counts=(1,))[0]
+    two_peak = build_candidates_for_counts(spectrum, (), None, config, peak_counts=(2,))[0]
+    adaptive_record = _screening_record(one_peak, bic=50.0)
+    window_record = _screening_record(two_peak, bic=5.0)
+    refined_specs = []
+
+    def fake_adaptive(*args: object, **kwargs: object) -> AdaptiveScreeningResult:
+        return AdaptiveScreeningResult((adaptive_record,), (1,), "interior_best")
+
+    def fake_build_windowed(*args: object, **kwargs: object) -> tuple[object, ...]:
+        return (two_peak,)
+
+    def fake_screen_windowed(*args: object, **kwargs: object) -> tuple[ScreeningRecord, ...]:
+        return (window_record,)
+
+    def fake_refine(*args: object, **kwargs: object) -> tuple[CandidateFit, ...]:
+        finalists = args[1]
+        refined_specs.extend(record.spec for record in finalists)  # type: ignore[attr-defined]
+        return tuple(
+            _candidate_fit(
+                spectrum,
+                record.spec,
+                residual_value=0.02 if record.spec.peak_count == 1 else 0.001,
+            )
+            for record in finalists  # type: ignore[attr-defined]
+        )
+
+    monkeypatch.setattr(api, "adaptive_screening", fake_adaptive)
+    monkeypatch.setattr(api, "build_windowed_candidates", fake_build_windowed)
+    monkeypatch.setattr(api, "screen_candidates", fake_screen_windowed)
+    monkeypatch.setattr(api, "refine_finalists", fake_refine)
+    monkeypatch.setattr(
+        api,
+        "covariance_uncertainty",
+        lambda fit, spectrum: ParameterUncertainty(
+            method="covariance",
+            parameters=(),
+            standard_errors=None,
+            confidence_intervals=None,
+        ),
+    )
+
+    result = autofit(spectrum, config=config)
+
+    assert two_peak in refined_specs
+    assert result.best_model.peak_count == 2
+    assert result.schema_version == "sifter.fit_result.v1"
+
+
+def _screening_record(spec: object, *, bic: float) -> ScreeningRecord:
+    return ScreeningRecord(
+        spec=spec,  # type: ignore[arg-type]
+        status="converged",
+        screening_bic=bic,
+        parameters=np.zeros(len(spec.lower_bounds)),  # type: ignore[attr-defined]
+        attempted_starts=1,
+        converged_starts=1,
+        total_evaluations=1,
+        elapsed_seconds=0.0,
+        failure_code=None,
+    )
+
+
+def _candidate_fit(spectrum: object, spec: object, *, residual_value: float) -> CandidateFit:
+    layout = ParameterLayout(spec.shape, spec.peak_count, spec.baseline_order)  # type: ignore[attr-defined]
+    parameters = layout.initial_vector(spec)  # type: ignore[arg-type]
+    residuals = np.full_like(spectrum.x, residual_value)  # type: ignore[attr-defined]
+    components = np.zeros((spec.peak_count, spectrum.x.size))  # type: ignore[attr-defined]
+    return CandidateFit(
+        spec=spec,  # type: ignore[arg-type]
+        parameters=parameters,
+        peaks=spec.starts,  # type: ignore[attr-defined]
+        baseline=np.zeros_like(spectrum.x),  # type: ignore[attr-defined]
+        components=components,
+        fitted=spectrum.intensity + residuals,  # type: ignore[attr-defined]
+        residuals=residuals,
+        objective_rss=float(np.dot(residuals, residuals)),
+        jacobian=np.eye(spectrum.x.size, parameters.size),  # type: ignore[attr-defined]
+        optimality=0.0,
+        evaluations=1,
+        attempted_starts=1,
+        converged_starts=1,
+        total_evaluations=1,
+        elapsed_seconds=0.0,
+    )

@@ -41,6 +41,7 @@ packages = ["src/sifter"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers --strict-config"
+pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.ruff]
