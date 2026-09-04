@@ -6,13 +6,25 @@ import pandas as pd
 import streamlit as st
 
 from sifter import AnalysisError, AutofitConfig, FitResult, autofit
-from sifter.io import load_spectrum, preview_table
+from sifter.io import DelimiterOption, HeaderMode, load_spectrum, preview_table
 from sifter.plotting import render_fit_png
 
 SHAPE_LABELS = {
     "Gaussian": "gaussian",
     "Lorentzian": "lorentzian",
     "Voigt": "voigt",
+}
+DELIMITER_LABELS: dict[str, DelimiterOption] = {
+    "Auto": "auto",
+    "Tab": "\t",
+    "Comma": ",",
+    "Semicolon": ";",
+    "Whitespace": "whitespace",
+}
+HEADER_LABELS: dict[str, HeaderMode] = {
+    "Auto": "auto",
+    "Present": "present",
+    "Absent": "absent",
 }
 
 
@@ -38,13 +50,52 @@ def main() -> None:
         st.caption("Start with a table containing one coordinate column and one intensity column.")
         return
 
+    with st.expander("Import options", expanded=False):
+        import_columns = st.columns(3)
+        with import_columns[0]:
+            delimiter_label = st.selectbox(
+                "Delimiter",
+                tuple(DELIMITER_LABELS),
+                key="input_delimiter",
+                help="Use an explicit delimiter if automatic detection reports malformed rows.",
+            )
+        with import_columns[1]:
+            header_label = st.selectbox(
+                "Header",
+                tuple(HEADER_LABELS),
+                key="input_header",
+            )
+        with import_columns[2]:
+            skip_rows = int(
+                st.number_input(
+                    "Leading rows to skip",
+                    min_value=0,
+                    value=0,
+                    step=1,
+                    key="input_skip_rows",
+                    help="Skip instrument titles or metadata lines before the table header.",
+                )
+            )
+    delimiter = DELIMITER_LABELS[delimiter_label]
+    header = HEADER_LABELS[header_label]
+
     try:
-        preview = preview_table(uploaded)
+        preview = preview_table(
+            uploaded,
+            delimiter=delimiter,
+            header=header,
+            skip_rows=skip_rows,
+        )
     except (TypeError, ValueError) as error:
         st.error(f"SIFTER could not preview this table. {error}")
         return
     for warning in preview.warnings:
         st.warning(f"{warning}: Confirm the inferred columns before analysis.")
+    delimiter_name = "whitespace" if preview.delimiter == "whitespace" else repr(preview.delimiter)
+    st.caption(
+        f"Detected {len(preview.columns)} columns · delimiter {delimiter_name} · "
+        f"header {'present' if preview.has_header else 'absent'}"
+    )
     st.dataframe(
         pd.DataFrame(preview.rows[:8], columns=preview.columns),
         width="stretch",
@@ -152,6 +203,9 @@ def main() -> None:
                 x_column=x_column,
                 intensity_column=intensity_column,
                 sigma_column=None if sigma_choice == "None" else sigma_choice,
+                delimiter=delimiter,
+                header=header,
+                skip_rows=skip_rows,
             )
             config = AutofitConfig(
                 max_peaks=max_peaks,

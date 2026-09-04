@@ -31,6 +31,24 @@ def test_upload_exposes_confirmable_defaults_but_waits_for_analyze() -> None:
     assert not any("Recommended model" in item.value for item in app.subheader)
 
 
+def test_import_controls_recover_tab_table_after_instrument_preamble() -> None:
+    app = AppTest.from_file(APP_PATH).run()
+    app.file_uploader[0].upload(
+        "instrument.txt",
+        _tab_spectrum_with_preamble(),
+        "text/plain",
+    ).run()
+
+    app.selectbox(key="input_delimiter").select("Tab")
+    app.number_input(key="input_skip_rows").set_value(1)
+    app.run()
+
+    assert app.exception == []
+    assert app.selectbox(key="x_column").value == "wave(energy)"
+    assert app.selectbox(key="intensity_column").value == "intensity"
+    assert not app.error
+
+
 def test_synthetic_upload_reaches_results_view_and_exports() -> None:
     app = AppTest.from_file(APP_PATH).run()
     app.file_uploader[0].upload("synthetic.csv", _two_peak_csv(), "text/csv").run()
@@ -64,4 +82,20 @@ def _two_peak_csv() -> bytes:
         f"{x_value:.12g},{intensity:.12g}"
         for x_value, intensity in zip(spectrum.x, spectrum.intensity, strict=True)
     )
+    return ("\n".join(rows) + "\n").encode()
+
+
+def _tab_spectrum_with_preamble() -> bytes:
+    rows = [
+        "Instrument export generated locally",
+        "wave(energy)\tintensity",
+        "1.50\t12.0",
+        "1.60\t15.5",
+        "1.70\t14.0",
+        "1.80\t18.5",
+        "1.90\t16.0",
+        "2.00\t13.5",
+        "2.10\t11.0",
+        "2.20\t9.5",
+    ]
     return ("\n".join(rows) + "\n").encode()
