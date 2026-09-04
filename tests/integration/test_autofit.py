@@ -106,3 +106,23 @@ def test_standard_search_matches_exhaustive_winner_with_fewer_final_candidates()
     assert standard.best_model.peak_count == exhaustive.best_model.peak_count == 2
     assert standard.best_model.bic == pytest.approx(exhaustive.best_model.bic, abs=1e-6)
     assert len(standard.candidates) < len(exhaustive.candidates)
+
+
+def test_public_serial_and_spawn_parallel_searches_are_equivalent() -> None:
+    spectrum = easy_one_peak_spectrum(seed=8)
+    common = dict(
+        max_peaks=1,
+        shapes=("gaussian", "lorentzian"),
+        baseline_orders=(0,),
+        fourier=False,
+        random_seed=23,
+        search_mode="exhaustive",
+    )
+
+    serial = autofit(spectrum, config=AutofitConfig(**common, workers=1))
+    parallel = autofit(spectrum, config=AutofitConfig(**common, workers=2))
+
+    assert serial.best_model.shape == parallel.best_model.shape
+    assert serial.best_model.bic == pytest.approx(parallel.best_model.bic)
+    np.testing.assert_allclose(serial.best_model.parameters, parallel.best_model.parameters)
+    assert parallel.settings.workers == 2

@@ -15,6 +15,7 @@ def test_autofit_config_has_conservative_defaults() -> None:
     assert config.uncertainty == "covariance"
     assert config.bootstrap_samples == 250
     assert config.random_seed == 42
+    assert config.workers == 1
 
 
 @pytest.mark.parametrize(
@@ -30,6 +31,8 @@ def test_autofit_config_has_conservative_defaults() -> None:
         ({"uncertainty": "profile"}, "uncertainty"),
         ({"bootstrap_samples": 200}, "bootstrap_samples"),
         ({"random_seed": -1}, "random_seed"),
+        ({"workers": 0}, "workers"),
+        ({"workers": True}, "workers"),
     ],
 )
 def test_autofit_config_rejects_invalid_settings(kwargs: dict[str, object], message: str) -> None:

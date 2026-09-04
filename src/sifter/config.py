@@ -33,6 +33,7 @@ class AutofitConfig:
     uncertainty: UncertaintyMode = "covariance"
     bootstrap_samples: int = 250
     random_seed: int = 42
+    workers: int = 1
 
     def __post_init__(self) -> None:
         if isinstance(self.max_peaks, bool) or self.max_peaks < 1:
@@ -58,3 +59,5 @@ class AutofitConfig:
             raise ValueError("bootstrap_samples must be 100, 250, or 1000")
         if isinstance(self.random_seed, bool) or self.random_seed < 0:
             raise ValueError("random_seed must be a nonnegative integer")
+        if isinstance(self.workers, bool) or self.workers < 1:
+            raise ValueError("workers must be a positive integer")

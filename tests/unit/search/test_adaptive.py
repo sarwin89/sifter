@@ -30,8 +30,9 @@ def test_boundary_winner_expands_until_repeated_worsening(
         policy_arg: object,
         *,
         seed: int,
+        workers: int,
     ) -> tuple[ScreeningRecord, ...]:
-        del spectrum_arg, policy_arg, seed
+        del spectrum_arg, policy_arg, seed, workers
         return tuple(_screened(candidate, scores[candidate.peak_count]) for candidate in candidates)
 
     monkeypatch.setattr("sifter.search.adaptive.screen_candidates", controlled_screen)
@@ -68,8 +69,9 @@ def test_expansion_stops_when_new_count_has_no_admissible_candidate(
         policy_arg: object,
         *,
         seed: int,
+        workers: int,
     ) -> tuple[ScreeningRecord, ...]:
-        del spectrum_arg, policy_arg, seed
+        del spectrum_arg, policy_arg, seed, workers
         if candidates[0].peak_count == 3:
             return tuple(_failed(candidate) for candidate in candidates)
         scores = {1: 10.0, 2: 5.0}

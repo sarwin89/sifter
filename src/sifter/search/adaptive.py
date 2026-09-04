@@ -49,6 +49,7 @@ def adaptive_screening(
             initial_candidates,
             policy,
             seed=_batch_seed(seed, max(initial_counts)),
+            workers=config.workers,
         )
     )
     screened_counts = list(initial_counts)
@@ -86,6 +87,7 @@ def adaptive_screening(
             expanded_candidates,
             policy,
             seed=_batch_seed(seed, current_count),
+            workers=config.workers,
         )
         records.extend(expanded)
         screened_counts.append(current_count)

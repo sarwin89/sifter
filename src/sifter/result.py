@@ -34,6 +34,7 @@ class AnalysisSettings:
     bootstrap_samples: int
     random_seed: int
     search_mode: SearchMode = "standard"
+    workers: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +139,7 @@ class FitResult:
                 "uncertainty": self.settings.uncertainty,
                 "bootstrap_samples": self.settings.bootstrap_samples,
                 "random_seed": self.settings.random_seed,
+                "workers": self.settings.workers,
             },
             "source_metadata": _safe_metadata(self.source_metadata),
             "axes": {

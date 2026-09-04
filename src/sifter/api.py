@@ -3,16 +3,14 @@
 from dataclasses import replace
 from importlib.metadata import version
 
-import numpy as np
-
 from sifter.config import AutofitConfig, PeakShape, SearchMode
 from sifter.diagnostics import diagnose_fit, residual_diagnostics
+from sifter.execution import build_fit_tasks, execute_fit_tasks
 from sifter.fitting import (
     CandidateFailure,
     CandidateFit,
     bootstrap_uncertainty,
     covariance_uncertainty,
-    fit_candidate,
 )
 from sifter.models import ParameterLayout, build_candidates_for_counts
 from sifter.reporting import DiagnosticWarning, diagnostic_warning
@@ -55,6 +53,7 @@ def autofit(
     fourier: bool | None = None,
     random_seed: int | None = None,
     search_mode: SearchMode | None = None,
+    workers: int | None = None,
 ) -> FitResult:
     """Run initialization, candidate fitting, ranking, and uncertainty."""
     settings = _resolved_config(
@@ -64,6 +63,7 @@ def autofit(
         fourier=fourier,
         random_seed=random_seed,
         search_mode=search_mode,
+        workers=workers,
     )
     preprocessing = preprocess_spectrum(spectrum, settings)
     policy = search_policy(settings.search_mode)
@@ -80,19 +80,14 @@ def autofit(
             settings,
             peak_counts=peak_counts,
         )
-        seed_sequences = np.random.SeedSequence(settings.random_seed).spawn(len(candidates))
-        fit_results: list[CandidateFit | CandidateFailure] = []
-        for candidate, seed_sequence in zip(candidates, seed_sequences, strict=True):
-            candidate_seed = int(seed_sequence.generate_state(1, dtype=np.uint32)[0])
-            fit_results.append(
-                fit_candidate(
-                    spectrum,
-                    candidate,
-                    starts=policy.refinement_starts,
-                    seed=candidate_seed,
-                    max_nfev=policy.refinement_max_nfev,
-                )
-            )
+        tasks = build_fit_tasks(
+            spectrum,
+            candidates,
+            starts=policy.refinement_starts,
+            seed=settings.random_seed,
+            max_nfev=policy.refinement_max_nfev,
+        )
+        fit_results = list(execute_fit_tasks(tasks, workers=settings.workers))
     else:
         assert policy.finalist_limit is not None
         adaptive = adaptive_screening(
@@ -112,6 +107,7 @@ def autofit(
                 finalists,
                 policy,
                 seed=settings.random_seed,
+                workers=settings.workers,
             )
         )
 
@@ -192,6 +188,7 @@ def autofit(
             bootstrap_samples=settings.bootstrap_samples,
             random_seed=settings.random_seed,
             search_mode=settings.search_mode,
+            workers=settings.workers,
         ),
         source_metadata=frozen_metadata(spectrum.metadata),
         x=frozen_array(spectrum.x),
@@ -219,6 +216,7 @@ def _resolved_config(
     fourier: bool | None,
     random_seed: int | None,
     search_mode: SearchMode | None,
+    workers: int | None,
 ) -> AutofitConfig:
     resolved = AutofitConfig() if config is None else config
     if max_peaks is not None:
@@ -231,6 +229,8 @@ def _resolved_config(
         resolved = replace(resolved, random_seed=random_seed)
     if search_mode is not None:
         resolved = replace(resolved, search_mode=search_mode)
+    if workers is not None:
+        resolved = replace(resolved, workers=workers)
     return resolved
 
 

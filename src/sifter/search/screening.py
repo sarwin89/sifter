@@ -7,6 +7,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from sifter.config import PeakShape
+from sifter.execution import build_fit_tasks, execute_fit_tasks
 from sifter.fitting import CandidateFailure, CandidateFit, FailureCode, fit_candidate
 from sifter.models import ModelSpec
 from sifter.search.policy import SearchPolicy
@@ -38,24 +39,21 @@ def screen_candidates(
     policy: SearchPolicy,
     *,
     seed: int,
+    workers: int = 1,
 ) -> tuple[ScreeningRecord, ...]:
     """Fit adaptive candidates cheaply and retain internal warm-start evidence."""
     assert policy.screening_starts is not None
     assert policy.screening_max_nfev is not None
-    seed_sequences = np.random.SeedSequence(seed).spawn(len(candidates))
-    records: list[ScreeningRecord] = []
-    for candidate, seed_sequence in zip(candidates, seed_sequences, strict=True):
-        candidate_seed = int(seed_sequence.generate_state(1, dtype=np.uint32)[0])
-        result = fit_candidate(
-            spectrum,
-            candidate,
-            starts=policy.screening_starts,
-            seed=candidate_seed,
-            max_nfev=policy.screening_max_nfev,
-            allow_budget_exhausted=True,
-        )
-        records.append(_screening_record(result, spectrum))
-    return tuple(records)
+    tasks = build_fit_tasks(
+        spectrum,
+        candidates,
+        starts=policy.screening_starts,
+        seed=seed,
+        max_nfev=policy.screening_max_nfev,
+        allow_budget_exhausted=True,
+    )
+    results = execute_fit_tasks(tasks, workers=workers, fit_function=fit_candidate)
+    return tuple(_screening_record(result, spectrum) for result in results)
 
 
 def retain_diverse_finalists(
@@ -110,24 +108,23 @@ def refine_finalists(
     policy: SearchPolicy,
     *,
     seed: int,
+    workers: int = 1,
 ) -> tuple[CandidateFit | CandidateFailure, ...]:
     """Warm-start strict full-budget fits from retained screening candidates."""
-    seed_sequences = np.random.SeedSequence(seed).spawn(len(finalists))
-    results: list[CandidateFit | CandidateFailure] = []
-    for finalist, seed_sequence in zip(finalists, seed_sequences, strict=True):
+    candidates = tuple(finalist.spec for finalist in finalists)
+    initial_parameters: dict[ModelSpec, NDArray[np.float64]] = {}
+    for finalist in finalists:
         assert finalist.parameters is not None
-        candidate_seed = int(seed_sequence.generate_state(1, dtype=np.uint32)[0])
-        results.append(
-            fit_candidate(
-                spectrum,
-                finalist.spec,
-                starts=policy.refinement_starts,
-                seed=candidate_seed,
-                max_nfev=policy.refinement_max_nfev,
-                initial_parameters=finalist.parameters,
-            )
-        )
-    return tuple(results)
+        initial_parameters[finalist.spec] = finalist.parameters
+    tasks = build_fit_tasks(
+        spectrum,
+        candidates,
+        starts=policy.refinement_starts,
+        seed=seed,
+        max_nfev=policy.refinement_max_nfev,
+        initial_parameters=initial_parameters,
+    )
+    return execute_fit_tasks(tasks, workers=workers, fit_function=fit_candidate)
 
 
 def screening_failures(
