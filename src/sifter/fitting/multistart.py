@@ -1,13 +1,17 @@
 """Deterministic in-bound optimizer starting vectors."""
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 from sifter.models import ModelSpec, ParameterLayout
 
 
 def generate_starts(
-    spec: ModelSpec, *, count: int = 8, seed: int = 42
+    spec: ModelSpec,
+    *,
+    count: int = 8,
+    seed: int = 42,
+    initial_parameters: ArrayLike | None = None,
 ) -> tuple[NDArray[np.float64], ...]:
     """Generate a declared start plus reproducible bounded perturbations."""
     if isinstance(count, bool) or count < 1:
@@ -15,7 +19,15 @@ def generate_starts(
     if isinstance(seed, bool) or seed < 0:
         raise ValueError("seed must be a nonnegative integer")
     layout = ParameterLayout(spec.shape, spec.peak_count, spec.baseline_order)
-    initial = layout.initial_vector(spec)
+    initial = (
+        layout.initial_vector(spec)
+        if initial_parameters is None
+        else np.asarray(initial_parameters, dtype=np.float64)
+    )
+    if initial.ndim != 1 or initial.size != layout.parameter_count:
+        raise ValueError("initial_parameters do not match the parameter layout")
+    if not np.isfinite(initial).all():
+        raise ValueError("initial_parameters must contain only finite values")
     lower = np.asarray(spec.lower_bounds, dtype=np.float64)
     upper = np.asarray(spec.upper_bounds, dtype=np.float64)
     margin = np.maximum((upper - lower) * 1e-9, np.finfo(float).eps)

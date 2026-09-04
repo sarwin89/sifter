@@ -30,3 +30,17 @@ def test_multistarts_reject_nonpositive_count() -> None:
         assert "count" in str(error)
     else:
         raise AssertionError("generate_starts accepted a nonpositive count")
+
+
+def test_explicit_initial_parameters_replace_declared_first_start() -> None:
+    spec = one_gaussian_spec(easy_one_peak_spectrum())
+    layout = ParameterLayout(spec.shape, spec.peak_count, spec.baseline_order)
+    initial = layout.initial_vector(spec).copy()
+    initial[2] *= 1.2
+
+    starts = generate_starts(spec, count=3, seed=9, initial_parameters=initial)
+
+    assert np.array_equal(starts[0], initial)
+    assert len(starts) == 3
+    assert all(np.all(start > spec.lower_bounds) for start in starts)
+    assert all(np.all(start < spec.upper_bounds) for start in starts)

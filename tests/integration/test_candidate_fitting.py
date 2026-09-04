@@ -3,7 +3,7 @@ import pytest
 
 from sifter import AutofitConfig, Spectrum
 from sifter.fitting import CandidateFailure, CandidateFit, fit_candidate
-from sifter.models import build_candidates
+from sifter.models import ParameterLayout, build_candidates
 from sifter.synthetic import SyntheticPeak, make_spectrum
 from tests.helpers import easy_one_peak_spectrum, one_gaussian_spec
 
@@ -70,3 +70,59 @@ def test_all_failed_starts_return_structured_failure(monkeypatch: pytest.MonkeyP
     assert result.code == "ALL_STARTS_FAILED"
     assert result.attempted_starts == 3
     assert "controlled optimizer failure" in result.message
+
+
+def test_candidate_fit_rejects_nonpositive_evaluation_budget() -> None:
+    spectrum = easy_one_peak_spectrum()
+
+    with pytest.raises(ValueError, match="max_nfev"):
+        fit_candidate(
+            spectrum,
+            one_gaussian_spec(spectrum),
+            starts=1,
+            seed=2,
+            max_nfev=0,
+        )
+
+
+def test_candidate_fit_accepts_previous_solution_as_warm_start() -> None:
+    spectrum = easy_one_peak_spectrum(seed=4)
+    spec = one_gaussian_spec(spectrum)
+    initial = ParameterLayout(spec.shape, spec.peak_count, spec.baseline_order).initial_vector(spec)
+    initial[2] *= 1.2
+
+    fit = fit_candidate(
+        spectrum,
+        spec,
+        starts=2,
+        seed=9,
+        max_nfev=2_500,
+        initial_parameters=initial,
+    )
+
+    assert isinstance(fit, CandidateFit)
+    assert fit.peaks[0].center == pytest.approx(1.4, abs=0.01)
+
+
+def test_every_optimizer_start_receives_finite_evaluation_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_budgets: list[object] = []
+
+    def record_budget(*args: object, **kwargs: object) -> None:
+        observed_budgets.append(kwargs.get("max_nfev"))
+        raise RuntimeError("controlled optimizer stop")
+
+    monkeypatch.setattr("sifter.fitting.optimizer.least_squares", record_budget)
+    spectrum = easy_one_peak_spectrum()
+
+    result = fit_candidate(
+        spectrum,
+        one_gaussian_spec(spectrum),
+        starts=2,
+        seed=2,
+        max_nfev=37,
+    )
+
+    assert isinstance(result, CandidateFailure)
+    assert observed_budgets == [37, 37]

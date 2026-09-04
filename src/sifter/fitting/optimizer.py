@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 from scipy.optimize import OptimizeResult, least_squares
 
 from sifter.fitting.multistart import generate_starts
@@ -47,8 +47,12 @@ def fit_candidate(
     *,
     starts: int = 8,
     seed: int = 42,
+    max_nfev: int = 10_000,
+    initial_parameters: ArrayLike | None = None,
 ) -> CandidateFit | CandidateFailure:
     """Fit one candidate and retain the best valid multistart result."""
+    if isinstance(max_nfev, bool) or max_nfev < 1:
+        raise ValueError("max_nfev must be a positive integer")
     layout = ParameterLayout(spec.shape, spec.peak_count, spec.baseline_order)
     if spectrum.x.size <= layout.parameter_count:
         return CandidateFailure(
@@ -68,7 +72,12 @@ def fit_candidate(
         residuals = evaluate_model(spectrum.x, parameters, spec).fitted - spectrum.intensity
         return residuals if spectrum.sigma is None else residuals / spectrum.sigma
 
-    start_vectors = generate_starts(spec, count=starts, seed=seed)
+    start_vectors = generate_starts(
+        spec,
+        count=starts,
+        seed=seed,
+        initial_parameters=initial_parameters,
+    )
     for start in start_vectors:
         try:
             result = least_squares(
@@ -77,6 +86,7 @@ def fit_candidate(
                 bounds=(lower, upper),
                 method="trf",
                 x_scale="jac",
+                max_nfev=max_nfev,
             )
         except Exception as error:
             errors.append(str(error))
