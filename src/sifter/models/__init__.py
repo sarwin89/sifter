@@ -1,6 +1,6 @@
 """Serializable spectral model specifications and evaluation."""
 
-from sifter.models.builder import build_candidates
+from sifter.models.builder import build_candidates, build_candidates_for_counts
 from sifter.models.specification import (
     ModelEvaluation,
     ModelSpec,
@@ -15,5 +15,6 @@ __all__ = [
     "ParameterLayout",
     "PeakStart",
     "build_candidates",
+    "build_candidates_for_counts",
     "evaluate_model",
 ]
