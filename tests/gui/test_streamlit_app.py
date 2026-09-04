@@ -9,7 +9,7 @@ APP_PATH = Path(__file__).resolve().parents[2] / "app" / "streamlit_app.py"
 
 
 def test_initial_view_teaches_local_workflow_without_running_fit() -> None:
-    app = AppTest.from_file(APP_PATH).run()
+    app = _app()
 
     assert app.exception == []
     assert len(app.file_uploader) == 1
@@ -18,7 +18,7 @@ def test_initial_view_teaches_local_workflow_without_running_fit() -> None:
 
 
 def test_upload_exposes_confirmable_defaults_but_waits_for_analyze() -> None:
-    app = AppTest.from_file(APP_PATH).run()
+    app = _app()
     app.file_uploader[0].upload("synthetic.csv", _two_peak_csv(), "text/csv").run()
 
     assert app.exception == []
@@ -30,11 +30,14 @@ def test_upload_exposes_confirmable_defaults_but_waits_for_analyze() -> None:
     assert app.multiselect(key="shapes").value == ["Gaussian", "Lorentzian", "Voigt"]
     assert app.checkbox(key="fourier_enabled").value is True
     assert app.number_input(key="random_seed").value == 42
+    assert any("Pre-fit preview" in item.value for item in app.markdown)
+    assert any("Uniform FFT grid" in item.value for item in app.caption)
+    assert len(app.get("vega_lite_chart")) >= 3
     assert not any("Recommended model" in item.value for item in app.subheader)
 
 
 def test_import_controls_recover_tab_table_after_instrument_preamble() -> None:
-    app = AppTest.from_file(APP_PATH).run()
+    app = _app()
     app.file_uploader[0].upload(
         "instrument.txt",
         _tab_spectrum_with_preamble(),
@@ -52,7 +55,7 @@ def test_import_controls_recover_tab_table_after_instrument_preamble() -> None:
 
 
 def test_synthetic_upload_reaches_results_view_and_exports() -> None:
-    app = AppTest.from_file(APP_PATH).run()
+    app = _app()
     app.file_uploader[0].upload("synthetic.csv", _two_peak_csv(), "text/csv").run()
     app.number_input(key="max_peaks").set_value(2)
     app.multiselect(key="shapes").set_value(["Gaussian"])
@@ -65,6 +68,11 @@ def test_synthetic_upload_reaches_results_view_and_exports() -> None:
     assert len(app.download_button) == 3
     assert any("Candidate comparison" in item.value for item in app.subheader)
     assert any("Covariance" in item.value for item in app.caption)
+    assert app.get("progress")[-1].value == 100
+
+
+def _app() -> AppTest:
+    return AppTest.from_file(APP_PATH, default_timeout=10).run()
 
 
 def _two_peak_csv() -> bytes:

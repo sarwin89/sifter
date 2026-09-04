@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 import streamlit as st
 
-from sifter import AnalysisError, AutofitConfig, FitResult, autofit
+from sifter import (
+    AnalysisError,
+    AutofitConfig,
+    FitResult,
+    ProgressEvent,
+    SpectrumPreview,
+    autofit,
+    preview_spectrum,
+)
 from sifter.io import DelimiterOption, HeaderMode, load_spectrum, preview_table
 from sifter.plotting import render_fit_png
 
@@ -31,6 +41,15 @@ SEARCH_MODE_LABELS = {
     "Standard": "standard",
     "Thorough": "thorough",
     "Exhaustive": "exhaustive",
+}
+PHASE_LABELS = {
+    "preprocessing": "Preparing spectrum",
+    "screening": "Screening candidate models",
+    "expansion": "Expanding the peak-count search",
+    "refinement": "Refining finalists on the full spectrum",
+    "final_fitting": "Fitting candidate models",
+    "uncertainty": "Estimating uncertainty",
+    "completion": "Analysis complete",
 }
 
 
@@ -167,6 +186,7 @@ def main() -> None:
         uncertainty_mode = "covariance"
         bootstrap_samples = 250
         random_seed = 42
+        workers = 1
         with st.expander("Advanced settings", expanded=False):
             selected_baselines = st.multiselect(
                 "Baseline polynomial orders",
@@ -197,6 +217,17 @@ def main() -> None:
                     key="random_seed",
                 )
             )
+            workers = int(
+                st.number_input(
+                    "Process workers",
+                    min_value=1,
+                    max_value=max(1, min(8, os.cpu_count() or 1)),
+                    value=1,
+                    step=1,
+                    key="workers",
+                    help="Parallelizes independent candidate models with deterministic seeds.",
+                )
+            )
         estimated_candidates = max_peaks * len(selected_shapes) * len(selected_baselines)
         st.caption(f"Search ceiling: {estimated_candidates} candidate fits · seed {random_seed}")
         if uncertainty_mode == "bootstrap":
@@ -210,17 +241,42 @@ def main() -> None:
             disabled=not selected_shapes or not selected_baselines,
         )
 
+    try:
+        spectrum = load_spectrum(
+            uploaded,
+            x_column=x_column,
+            intensity_column=intensity_column,
+            sigma_column=None if sigma_choice == "None" else sigma_choice,
+            delimiter=delimiter,
+            header=header,
+            skip_rows=skip_rows,
+        )
+        spectrum_preview = preview_spectrum(
+            spectrum,
+            config=AutofitConfig(
+                max_peaks=max_peaks,
+                fourier=fourier_enabled,
+                interpolate_nonuniform_fft=allow_fft_interpolation,
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        st.error(f"SIFTER could not prepare this spectrum. {error}")
+        return
+    _render_preview(spectrum_preview)
+
     if submitted:
-        try:
-            spectrum = load_spectrum(
-                uploaded,
-                x_column=x_column,
-                intensity_column=intensity_column,
-                sigma_column=None if sigma_choice == "None" else sigma_choice,
-                delimiter=delimiter,
-                header=header,
-                skip_rows=skip_rows,
+        progress_bar = st.progress(0, text="Preparing analysis…")
+        fit_status = st.status("Preparing analysis…", expanded=False)
+
+        def report_progress(event: ProgressEvent) -> None:
+            label = PHASE_LABELS[event.phase]
+            progress_bar.progress(_overall_progress(event), text=label)
+            fit_status.update(
+                label=label,
+                state="complete" if event.phase == "completion" else "running",
             )
+
+        try:
             config = AutofitConfig(
                 max_peaks=max_peaks,
                 search_mode=SEARCH_MODE_LABELS[search_mode_label],
@@ -231,11 +287,16 @@ def main() -> None:
                 uncertainty=uncertainty_mode,
                 bootstrap_samples=bootstrap_samples,
                 random_seed=random_seed,
+                workers=workers,
             )
-            with st.spinner("Fitting and ranking candidate models…"):
-                st.session_state["fit_result"] = autofit(spectrum, config=config)
+            st.session_state["fit_result"] = autofit(
+                spectrum,
+                config=config,
+                progress=report_progress,
+            )
         except (AnalysisError, TypeError, ValueError) as error:
             st.session_state.pop("fit_result", None)
+            fit_status.update(label="Analysis failed", state="error", expanded=True)
             st.error(f"SIFTER could not complete the analysis. {error}")
 
     result = st.session_state.get("fit_result")
@@ -245,7 +306,7 @@ def main() -> None:
 
 def _render_result(result: FitResult) -> None:
     model = result.best_model
-    st.markdown("### 04 · Inspect and export")
+    st.markdown("### 05 · Inspect and export")
     st.subheader(
         f"Recommended model · {model.peak_count} {model.shape.title()} "
         f"{'peak' if model.peak_count == 1 else 'peaks'}"
@@ -298,6 +359,117 @@ def _render_result(result: FitResult) -> None:
         file_name="sifter.fit.png",
         mime="image/png",
     )
+
+
+def _render_preview(preview: SpectrumPreview) -> None:
+    st.markdown("### 04 · Pre-fit preview")
+    grid_label = "Uniform FFT grid" if preview.grid_is_uniform else "Nonuniform FFT grid"
+    interpolation_label = (
+        "diagnostic interpolation enabled"
+        if preview.fourier_interpolated
+        else "no diagnostic interpolation"
+    )
+    st.caption(
+        f"{grid_label} · median step {preview.grid_median_step:.4g} "
+        f"{preview.x_unit or preview.x_name} · {interpolation_label}"
+    )
+    real_space = pd.DataFrame(
+        {
+            preview.x_name: preview.x,
+            "Raw intensity": preview.intensity,
+            "Global baseline": preview.baseline,
+            "Baseline-adjusted": preview.adjusted,
+        }
+    )
+    st.line_chart(
+        real_space,
+        x=preview.x_name,
+        y=["Raw intensity", "Global baseline", "Baseline-adjusted"],
+        x_label=(
+            preview.x_name
+            if preview.x_unit is None
+            else f"{preview.x_name} ({preview.x_unit})"
+        ),
+        y_label=preview.intensity_name,
+    )
+    if preview.provisional_centers:
+        proposals = pd.DataFrame(
+            {
+                "Center": preview.provisional_centers,
+                "Width estimate": preview.provisional_widths,
+                "Prominence": preview.provisional_prominences,
+            }
+        )
+        st.dataframe(proposals, width="stretch", hide_index=True)
+    else:
+        st.caption("No provisional centers passed the conservative detector thresholds.")
+
+    if not preview.fourier_enabled:
+        st.caption("Fourier diagnostics are disabled for this analysis.")
+        return
+    if preview.frequency.size == 0:
+        st.warning(
+            f"Fourier preview unavailable: {preview.fourier_warning_code or 'insufficient data'}"
+        )
+        return
+
+    fourier_columns = st.columns(2)
+    magnitude = pd.DataFrame(
+        {"Frequency": preview.frequency, "FFT magnitude": preview.magnitude}
+    )
+    with fourier_columns[0]:
+        st.line_chart(
+            magnitude,
+            x="Frequency",
+            y="FFT magnitude",
+            x_label=f"Frequency ({preview.frequency_unit})",
+            y_label="Magnitude",
+        )
+    log_data: dict[str, object] = {
+        "Frequency": preview.frequency,
+        "Log magnitude": preview.log_magnitude,
+    }
+    for envelope in preview.envelope_fits:
+        frequency = preview.frequency
+        if envelope.family == "gaussian":
+            tendency = envelope.intercept - envelope.decay_coefficients[0] * frequency**2
+        elif envelope.family == "lorentzian":
+            tendency = envelope.intercept - envelope.decay_coefficients[0] * frequency
+        else:
+            tendency = (
+                envelope.intercept
+                - envelope.decay_coefficients[0] * frequency
+                - envelope.decay_coefficients[1] * frequency**2
+            )
+        log_data[f"{envelope.family.title()} tendency"] = tendency
+    with fourier_columns[1]:
+        st.line_chart(
+            pd.DataFrame(log_data),
+            x="Frequency",
+            y=[column for column in log_data if column != "Frequency"],
+            x_label=f"Frequency ({preview.frequency_unit})",
+            y_label="Log magnitude",
+        )
+    spacings = ", ".join(f"{value:.4g}" for value in preview.candidate_spacings)
+    st.caption(
+        f"{preview.fourier_window.title() if preview.fourier_window else 'No'} window · "
+        f"candidate spacings: {spacings or 'none'} {preview.x_unit or preview.x_name}"
+    )
+
+
+def _overall_progress(event: ProgressEvent) -> int:
+    ranges = {
+        "preprocessing": (0, 10),
+        "screening": (10, 45),
+        "expansion": (45, 55),
+        "refinement": (55, 80),
+        "final_fitting": (10, 80),
+        "uncertainty": (80, 98),
+        "completion": (100, 100),
+    }
+    start, end = ranges[event.phase]
+    fraction = 1.0 if event.total == 0 else event.completed / event.total
+    return round(start + (end - start) * fraction)
 
 
 def _styles() -> None:
