@@ -5,9 +5,7 @@ from importlib.metadata import version
 
 import numpy as np
 
-from sifter.baseline import asls_baseline
 from sifter.config import AutofitConfig, PeakShape
-from sifter.detection import detect_peak_proposals
 from sifter.diagnostics import diagnose_fit, residual_diagnostics
 from sifter.fitting import (
     CandidateFailure,
@@ -16,7 +14,6 @@ from sifter.fitting import (
     covariance_uncertainty,
     fit_candidate,
 )
-from sifter.fourier import analyze_fourier
 from sifter.models import ParameterLayout, build_candidates
 from sifter.reporting import DiagnosticWarning, diagnostic_warning
 from sifter.result import (
@@ -27,6 +24,7 @@ from sifter.result import (
     frozen_array,
     frozen_metadata,
 )
+from sifter.search import preprocess_spectrum
 from sifter.selection import CandidateScore, rank_candidates, score_candidate
 from sifter.spectrum import Spectrum
 
@@ -57,28 +55,13 @@ def autofit(
         fourier=fourier,
         random_seed=random_seed,
     )
-    baseline = asls_baseline(spectrum.intensity)
-    adjusted = spectrum.intensity - baseline
-    proposal_spectrum = Spectrum(
-        spectrum.x,
-        adjusted,
-        sigma=spectrum.sigma,
-        x_name=spectrum.x_name,
-        x_unit=spectrum.x_unit,
-        intensity_name=spectrum.intensity_name,
-        metadata=spectrum.metadata,
+    preprocessing = preprocess_spectrum(spectrum, settings)
+    candidates = build_candidates(
+        spectrum,
+        preprocessing.proposals,
+        preprocessing.fourier,
+        settings,
     )
-    proposals = detect_peak_proposals(proposal_spectrum, max_peaks=settings.max_peaks)
-    fourier_result = (
-        analyze_fourier(
-            spectrum,
-            adjusted,
-            interpolate_nonuniform=settings.interpolate_nonuniform_fft,
-        )
-        if settings.fourier
-        else None
-    )
-    candidates = build_candidates(spectrum, proposals, fourier_result, settings)
     seed_sequences = np.random.SeedSequence(settings.random_seed).spawn(len(candidates))
     fit_results: list[CandidateFit | CandidateFailure] = []
     for candidate, seed_sequence in zip(candidates, seed_sequences, strict=True):
@@ -100,7 +83,7 @@ def autofit(
     best_fit = successful[best_score.spec]
     diagnostics = residual_diagnostics(best_fit.residuals)
     fit_warnings = list(diagnose_fit(best_fit, spectrum))
-    fit_warnings.extend(_analysis_warnings(best_score, fourier_result))
+    fit_warnings.extend(_analysis_warnings(best_score, preprocessing.fourier))
     uncertainty = (
         covariance_uncertainty(best_fit, spectrum)
         if settings.uncertainty == "covariance"
@@ -171,7 +154,7 @@ def autofit(
         intensity_name=spectrum.intensity_name,
         best_model=model,
         candidates=ranked,
-        fourier=fourier_result,
+        fourier=preprocessing.fourier,
         residual_diagnostics=diagnostics,
         uncertainty=uncertainty,
         warnings=tuple(fit_warnings),
