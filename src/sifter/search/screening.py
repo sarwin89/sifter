@@ -10,6 +10,7 @@ from sifter.config import PeakShape
 from sifter.execution import build_fit_tasks, execute_fit_tasks
 from sifter.fitting import CandidateFailure, CandidateFit, FailureCode, fit_candidate
 from sifter.models import ModelSpec
+from sifter.progress import TaskProgressCallback
 from sifter.search.policy import SearchPolicy
 from sifter.selection import unweighted_information_criteria
 from sifter.spectrum import Spectrum
@@ -40,6 +41,7 @@ def screen_candidates(
     *,
     seed: int,
     workers: int = 1,
+    on_progress: TaskProgressCallback | None = None,
 ) -> tuple[ScreeningRecord, ...]:
     """Fit adaptive candidates cheaply and retain internal warm-start evidence."""
     assert policy.screening_starts is not None
@@ -52,7 +54,12 @@ def screen_candidates(
         max_nfev=policy.screening_max_nfev,
         allow_budget_exhausted=True,
     )
-    results = execute_fit_tasks(tasks, workers=workers, fit_function=fit_candidate)
+    results = execute_fit_tasks(
+        tasks,
+        workers=workers,
+        fit_function=fit_candidate,
+        on_progress=on_progress,
+    )
     return tuple(_screening_record(result, spectrum) for result in results)
 
 
@@ -109,6 +116,7 @@ def refine_finalists(
     *,
     seed: int,
     workers: int = 1,
+    on_progress: TaskProgressCallback | None = None,
 ) -> tuple[CandidateFit | CandidateFailure, ...]:
     """Warm-start strict full-budget fits from retained screening candidates."""
     candidates = tuple(finalist.spec for finalist in finalists)
@@ -124,7 +132,12 @@ def refine_finalists(
         max_nfev=policy.refinement_max_nfev,
         initial_parameters=initial_parameters,
     )
-    return execute_fit_tasks(tasks, workers=workers, fit_function=fit_candidate)
+    return execute_fit_tasks(
+        tasks,
+        workers=workers,
+        fit_function=fit_candidate,
+        on_progress=on_progress,
+    )
 
 
 def screening_failures(

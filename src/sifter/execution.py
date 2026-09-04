@@ -2,7 +2,7 @@
 
 import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
 from multiprocessing import get_context
@@ -13,6 +13,7 @@ from numpy.typing import NDArray
 from sifter.config import JSONScalar
 from sifter.fitting import CandidateFailure, CandidateFit, fit_candidate
 from sifter.models import ModelSpec
+from sifter.progress import TaskProgressCallback
 from sifter.spectrum import Spectrum
 
 FitFunction = Callable[..., CandidateFit | CandidateFailure]
@@ -113,12 +114,18 @@ def execute_fit_tasks(
     *,
     workers: int,
     fit_function: FitFunction = fit_candidate,
+    on_progress: TaskProgressCallback | None = None,
 ) -> tuple[CandidateFit | CandidateFailure, ...]:
     """Execute candidate tasks in input order, serially or with spawn workers."""
     if isinstance(workers, bool) or workers < 1:
         raise ValueError("workers must be a positive integer")
     if workers == 1 or len(tasks) < 2:
-        return tuple(_call_fit_candidate(task, fit_function) for task in tasks)
+        serial_results: list[CandidateFit | CandidateFailure] = []
+        for completed, task in enumerate(tasks, start=1):
+            serial_results.append(_call_fit_candidate(task, fit_function))
+            if on_progress is not None:
+                on_progress(completed, len(tasks))
+        return tuple(serial_results)
     if fit_function is not fit_candidate:
         raise ValueError("custom fit functions are supported only for serial execution")
     with _parent_thread_limit_environment(), ProcessPoolExecutor(
@@ -126,7 +133,16 @@ def execute_fit_tasks(
         mp_context=get_context("spawn"),
         initializer=limit_numerical_threads,
     ) as executor:
-        return tuple(executor.map(_fit_candidate_worker, tasks))
+        futures = {
+            executor.submit(_fit_candidate_worker, task): index
+            for index, task in enumerate(tasks)
+        }
+        ordered: dict[int, CandidateFit | CandidateFailure] = {}
+        for completed, future in enumerate(as_completed(futures), start=1):
+            ordered[futures[future]] = future.result()
+            if on_progress is not None:
+                on_progress(completed, len(tasks))
+        return tuple(ordered[index] for index in range(len(tasks)))
 
 
 def limit_numerical_threads() -> None:

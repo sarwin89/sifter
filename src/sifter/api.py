@@ -13,6 +13,7 @@ from sifter.fitting import (
     covariance_uncertainty,
 )
 from sifter.models import ParameterLayout, build_candidates_for_counts
+from sifter.progress import ProgressCallback, emit_progress, progress_for_phase
 from sifter.reporting import DiagnosticWarning, diagnostic_warning
 from sifter.result import (
     AnalysisSettings,
@@ -54,6 +55,7 @@ def autofit(
     random_seed: int | None = None,
     search_mode: SearchMode | None = None,
     workers: int | None = None,
+    progress: ProgressCallback | None = None,
 ) -> FitResult:
     """Run initialization, candidate fitting, ranking, and uncertainty."""
     settings = _resolved_config(
@@ -65,7 +67,9 @@ def autofit(
         search_mode=search_mode,
         workers=workers,
     )
+    emit_progress(progress, "preprocessing", 0, 1)
     preprocessing = preprocess_spectrum(spectrum, settings)
+    emit_progress(progress, "preprocessing", 1, 1)
     policy = search_policy(settings.search_mode)
     peak_counts = initial_peak_counts(
         preprocessing.detection,
@@ -87,7 +91,14 @@ def autofit(
             seed=settings.random_seed,
             max_nfev=policy.refinement_max_nfev,
         )
-        fit_results = list(execute_fit_tasks(tasks, workers=settings.workers))
+        emit_progress(progress, "final_fitting", 0, len(tasks))
+        fit_results = list(
+            execute_fit_tasks(
+                tasks,
+                workers=settings.workers,
+                on_progress=progress_for_phase(progress, "final_fitting"),
+            )
+        )
     else:
         assert policy.finalist_limit is not None
         adaptive = adaptive_screening(
@@ -97,10 +108,12 @@ def autofit(
             policy,
             initial_counts=peak_counts,
             seed=settings.random_seed,
+            progress=progress,
         )
         screening = adaptive.records
         finalists = retain_diverse_finalists(screening, limit=policy.finalist_limit)
         fit_results = list(screening_failures(screening))
+        emit_progress(progress, "refinement", 0, len(finalists))
         fit_results.extend(
             refine_finalists(
                 spectrum,
@@ -108,6 +121,7 @@ def autofit(
                 policy,
                 seed=settings.random_seed,
                 workers=settings.workers,
+                on_progress=progress_for_phase(progress, "refinement"),
             )
         )
 
@@ -127,16 +141,19 @@ def autofit(
     diagnostics = residual_diagnostics(best_fit.residuals)
     fit_warnings = list(diagnose_fit(best_fit, spectrum))
     fit_warnings.extend(_analysis_warnings(best_score, preprocessing.fourier))
-    uncertainty = (
-        covariance_uncertainty(best_fit, spectrum)
-        if settings.uncertainty == "covariance"
-        else bootstrap_uncertainty(
+    uncertainty_total = 1 if settings.uncertainty == "covariance" else settings.bootstrap_samples
+    emit_progress(progress, "uncertainty", 0, uncertainty_total)
+    if settings.uncertainty == "covariance":
+        uncertainty = covariance_uncertainty(best_fit, spectrum)
+        emit_progress(progress, "uncertainty", 1, 1)
+    else:
+        uncertainty = bootstrap_uncertainty(
             best_fit,
             spectrum,
             samples=settings.bootstrap_samples,
             seed=settings.random_seed,
+            on_progress=progress_for_phase(progress, "uncertainty"),
         )
-    )
     if uncertainty.warning is not None:
         fit_warnings.append(uncertainty.warning)
 
@@ -176,7 +193,7 @@ def autofit(
         observation_count=spectrum.x.size,
         reduced_chi_squared=best_score.reduced_chi_squared,
     )
-    return FitResult(
+    result = FitResult(
         schema_version="sifter.fit_result.v1",
         settings=AnalysisSettings(
             max_peaks=settings.max_peaks,
@@ -206,6 +223,8 @@ def autofit(
         observation_count=spectrum.x.size,
         sifter_version=version("sifter"),
     )
+    emit_progress(progress, "completion", 1, 1)
+    return result
 
 
 def _resolved_config(

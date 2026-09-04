@@ -53,7 +53,14 @@ def test_serial_and_spawn_parallel_results_are_equivalent() -> None:
     tasks = build_fit_tasks(spectrum, candidates, starts=2, seed=19, max_nfev=2_000)
 
     serial = execute_fit_tasks(tasks, workers=1)
-    parallel = execute_fit_tasks(tasks, workers=2)
+    callback_processes: list[int] = []
+    updates: list[tuple[int, int]] = []
+
+    def record_progress(completed: int, total: int) -> None:
+        callback_processes.append(os.getpid())
+        updates.append((completed, total))
+
+    parallel = execute_fit_tasks(tasks, workers=2, on_progress=record_progress)
 
     assert tuple(type(result) for result in parallel) == tuple(type(result) for result in serial)
     for serial_result, parallel_result in zip(serial, parallel, strict=True):
@@ -64,3 +71,5 @@ def test_serial_and_spawn_parallel_results_are_equivalent() -> None:
         np.testing.assert_allclose(parallel_result.parameters, serial_result.parameters)
         np.testing.assert_allclose(parallel_result.fitted, serial_result.fitted)
         assert parallel_result.total_evaluations == serial_result.total_evaluations
+    assert updates == [(1, 2), (2, 2)]
+    assert set(callback_processes) == {os.getpid()}

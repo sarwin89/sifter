@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from sifter import AutofitConfig, autofit
+from sifter import AutofitConfig, ProgressEvent, autofit
 from tests.helpers import easy_one_peak_spectrum, easy_two_peak_spectrum
 
 
@@ -126,3 +126,26 @@ def test_public_serial_and_spawn_parallel_searches_are_equivalent() -> None:
     assert serial.best_model.bic == pytest.approx(parallel.best_model.bic)
     np.testing.assert_allclose(serial.best_model.parameters, parallel.best_model.parameters)
     assert parallel.settings.workers == 2
+
+
+def test_progress_events_cover_standard_search_phases() -> None:
+    events: list[ProgressEvent] = []
+
+    autofit(
+        easy_one_peak_spectrum(seed=9),
+        config=AutofitConfig(
+            max_peaks=1,
+            shapes=("gaussian", "lorentzian"),
+            baseline_orders=(0,),
+            fourier=False,
+            random_seed=29,
+            workers=2,
+        ),
+        progress=events.append,
+    )
+
+    phases = {event.phase for event in events}
+    assert {"preprocessing", "screening", "refinement", "uncertainty", "completion"} <= phases
+    assert events[0] == ProgressEvent("preprocessing", 0, 1)
+    assert events[-1] == ProgressEvent("completion", 1, 1)
+    assert all(event.completed <= event.total for event in events)

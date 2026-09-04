@@ -7,6 +7,7 @@ import numpy as np
 
 from sifter.config import AutofitConfig
 from sifter.models import build_candidates_for_counts
+from sifter.progress import ProgressCallback, emit_progress, progress_for_phase
 from sifter.search.policy import SearchPolicy
 from sifter.search.preprocessing import SearchPreprocessing
 from sifter.search.screening import ScreeningRecord, screen_candidates
@@ -32,6 +33,7 @@ def adaptive_screening(
     *,
     initial_counts: tuple[int, ...],
     seed: int,
+    progress: ProgressCallback | None = None,
 ) -> AdaptiveScreeningResult:
     """Screen an initial count window and expand a boundary winner conservatively."""
     assert not policy.exhaustive
@@ -43,6 +45,7 @@ def adaptive_screening(
         config,
         peak_counts=initial_counts,
     )
+    emit_progress(progress, "screening", 0, len(initial_candidates))
     records = list(
         screen_candidates(
             spectrum,
@@ -50,6 +53,7 @@ def adaptive_screening(
             policy,
             seed=_batch_seed(seed, max(initial_counts)),
             workers=config.workers,
+            on_progress=progress_for_phase(progress, "screening"),
         )
     )
     screened_counts = list(initial_counts)
@@ -82,12 +86,24 @@ def adaptive_screening(
             config,
             peak_counts=(current_count,),
         )
+        emit_progress(
+            progress,
+            "expansion",
+            0,
+            len(expanded_candidates),
+            message=f"screening {current_count}-peak candidates",
+        )
         expanded = screen_candidates(
             spectrum,
             expanded_candidates,
             policy,
             seed=_batch_seed(seed, current_count),
             workers=config.workers,
+            on_progress=progress_for_phase(
+                progress,
+                "expansion",
+                message=f"screening {current_count}-peak candidates",
+            ),
         )
         records.extend(expanded)
         screened_counts.append(current_count)

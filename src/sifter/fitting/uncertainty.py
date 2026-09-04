@@ -8,6 +8,7 @@ import numpy as np
 from sifter.config import BOOTSTRAP_SUCCESS_FRACTION, SUPPORTED_BOOTSTRAP_SAMPLES
 from sifter.fitting.optimizer import CandidateFit, fit_candidate
 from sifter.models import ParameterLayout
+from sifter.progress import TaskProgressCallback
 from sifter.reporting import DiagnosticWarning, diagnostic_warning
 from sifter.spectrum import Spectrum
 
@@ -72,6 +73,7 @@ def bootstrap_uncertainty(
     *,
     samples: int = 250,
     seed: int = 42,
+    on_progress: TaskProgressCallback | None = None,
 ) -> ParameterUncertainty:
     """Estimate parameter uncertainty by deterministic residual resampling."""
     if samples not in SUPPORTED_BOOTSTRAP_SAMPLES:
@@ -82,7 +84,7 @@ def bootstrap_uncertainty(
     generator = np.random.default_rng(seed)
     centered = fit.residuals - np.mean(fit.residuals)
     estimates: list[np.ndarray] = []
-    for _ in range(samples):
+    for completed in range(1, samples + 1):
         sampled_residuals = generator.choice(centered, size=centered.size, replace=True)
         resampled = Spectrum(
             spectrum.x,
@@ -101,6 +103,8 @@ def bootstrap_uncertainty(
         )
         if isinstance(refit, CandidateFit):
             estimates.append(np.asarray(refit.parameters))
+        if on_progress is not None:
+            on_progress(completed, samples)
 
     successful = len(estimates)
     minimum_successes = int(np.ceil(samples * BOOTSTRAP_SUCCESS_FRACTION))
