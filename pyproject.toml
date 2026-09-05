@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sifter"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fourier-assisted inference for one-dimensional spectral peak models"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"

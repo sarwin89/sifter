@@ -10,7 +10,7 @@ from sifter.related import summarize_related_spectra
 from sifter.result import AnalysisSettings, FitResult, FittedPeak, ModelResult
 from sifter.spectrum import Spectrum
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AnalysisError",

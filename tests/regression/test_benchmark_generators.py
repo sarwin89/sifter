@@ -1,8 +1,11 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
+import benchmarks.benchmark_candidate_runtime as runtime_module
 from benchmarks.benchmark_candidate_runtime import (
+    benchmark_autofit_runtime,
     benchmark_candidate_runtime,
     make_runtime_case,
 )
@@ -58,14 +61,12 @@ def test_small_repeated_seed_benchmarks_report_aggregate_recovery_metrics() -> N
     assert widths["relative_error"].max() < 0.15
 
 
-def test_runtime_cases_cover_deterministic_three_and_ten_peak_candidates() -> None:
-    three_spectrum, three_spec = make_runtime_case(3)
-    ten_spectrum, ten_spec = make_runtime_case(10)
+def test_runtime_cases_cover_v02_release_peak_counts() -> None:
+    cases = {peak_count: make_runtime_case(peak_count) for peak_count in (1, 2, 3, 5, 8, 10)}
 
-    assert three_spec.peak_count == 3
-    assert ten_spec.peak_count == 10
-    assert three_spectrum.metadata["benchmark_case"] == "candidate-runtime-3-peak"
-    assert ten_spectrum.metadata["benchmark_case"] == "candidate-runtime-10-peak"
+    for peak_count, (spectrum, spec) in cases.items():
+        assert spec.peak_count == peak_count
+        assert spectrum.metadata["benchmark_case"] == f"candidate-runtime-{peak_count}-peak"
 
 
 def test_runtime_benchmark_reports_work_without_writing_by_default(
@@ -97,3 +98,30 @@ def test_runtime_benchmark_reports_work_without_writing_by_default(
         "elapsed_seconds",
     } <= set(table.columns)
     assert table.loc[0, "status"] == "converged"
+
+
+def test_autofit_runtime_benchmark_passes_workers_to_pipeline(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    seen_workers: list[int] = []
+
+    def fake_autofit(spectrum, *, config):  # type: ignore[no-untyped-def]
+        seen_workers.append(config.workers)
+        return SimpleNamespace(
+            best_model=SimpleNamespace(
+                peak_count=config.max_peaks,
+                bic=12.0,
+                aicc=11.0,
+            ),
+            candidates=(object(), object()),
+            warnings=(),
+        )
+
+    monkeypatch.setattr(runtime_module, "autofit", fake_autofit)
+
+    table = benchmark_autofit_runtime(peak_counts=(3,), repeats=1, workers=(1, 2))
+
+    assert seen_workers == [1, 2]
+    assert table["workers"].tolist() == [1, 2]
+    assert set(table["status"]) == {"completed"}
+    assert set(table["selected_peak_count"]) == {3}

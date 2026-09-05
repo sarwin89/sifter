@@ -2,7 +2,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from sifter import AutofitConfig, autofit
+from sifter import AutofitConfig, __version__, autofit
 from tests.helpers import easy_one_peak_spectrum
 
 
@@ -20,7 +20,7 @@ def test_result_records_version_provenance_and_immutable_arrays() -> None:
     )
 
     assert result.schema_version == "sifter.fit_result.v2"
-    assert result.sifter_version == "0.1.0"
+    assert result.sifter_version == __version__
     assert result.settings.random_seed == 19
     assert result.settings.search_mode == "standard"
     assert not result.settings.allow_broad_multimax_component
