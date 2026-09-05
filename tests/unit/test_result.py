@@ -23,6 +23,8 @@ def test_result_records_version_provenance_and_immutable_arrays() -> None:
     assert result.sifter_version == "0.1.0"
     assert result.settings.random_seed == 19
     assert result.settings.search_mode == "standard"
+    assert not result.settings.allow_broad_multimax_component
+    assert result.to_dict()["settings"]["allow_broad_multimax_component"] is False
     assert result.observation_count == spectrum.x.size
     assert result.source_metadata == spectrum.metadata
     assert not result.x.flags.writeable

@@ -16,6 +16,7 @@ def test_autofit_config_has_conservative_defaults() -> None:
     assert config.bootstrap_samples == 250
     assert config.random_seed == 42
     assert config.workers == 1
+    assert not config.allow_broad_multimax_component
 
 
 @pytest.mark.parametrize(
@@ -33,6 +34,7 @@ def test_autofit_config_has_conservative_defaults() -> None:
         ({"random_seed": -1}, "random_seed"),
         ({"workers": 0}, "workers"),
         ({"workers": True}, "workers"),
+        ({"allow_broad_multimax_component": "yes"}, "allow_broad_multimax_component"),
     ],
 )
 def test_autofit_config_rejects_invalid_settings(kwargs: dict[str, object], message: str) -> None:

@@ -34,6 +34,7 @@ class AutofitConfig:
     bootstrap_samples: int = 250
     random_seed: int = 42
     workers: int = 1
+    allow_broad_multimax_component: bool = False
 
     def __post_init__(self) -> None:
         if isinstance(self.max_peaks, bool) or self.max_peaks < 1:
@@ -61,3 +62,5 @@ class AutofitConfig:
             raise ValueError("random_seed must be a nonnegative integer")
         if isinstance(self.workers, bool) or self.workers < 1:
             raise ValueError("workers must be a positive integer")
+        if not isinstance(self.allow_broad_multimax_component, bool):
+            raise ValueError("allow_broad_multimax_component must be a boolean")

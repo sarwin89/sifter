@@ -155,7 +155,14 @@ def autofit(
     if not successful:
         raise AnalysisError("NO_VALID_CANDIDATE", failures)
 
-    scores = tuple(score_candidate(result, spectrum) for result in fit_results)
+    scores = tuple(
+        score_candidate(
+            result,
+            spectrum,
+            allow_broad_multimax_component=settings.allow_broad_multimax_component,
+        )
+        for result in fit_results
+    )
     ranked = rank_candidates(scores, settings.shapes)
     best_score = next(
         score
@@ -231,6 +238,7 @@ def autofit(
             random_seed=settings.random_seed,
             search_mode=settings.search_mode,
             workers=settings.workers,
+            allow_broad_multimax_component=settings.allow_broad_multimax_component,
         ),
         source_metadata=frozen_metadata(spectrum.metadata),
         x=frozen_array(spectrum.x),

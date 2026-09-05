@@ -35,6 +35,7 @@ class AnalysisSettings:
     random_seed: int
     search_mode: SearchMode = "standard"
     workers: int = 1
+    allow_broad_multimax_component: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +141,9 @@ class FitResult:
                 "bootstrap_samples": self.settings.bootstrap_samples,
                 "random_seed": self.settings.random_seed,
                 "workers": self.settings.workers,
+                "allow_broad_multimax_component": (
+                    self.settings.allow_broad_multimax_component
+                ),
             },
             "source_metadata": _safe_metadata(self.source_metadata),
             "axes": {
