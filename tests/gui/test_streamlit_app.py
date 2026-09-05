@@ -3,6 +3,8 @@ from pathlib import Path
 import numpy as np
 from streamlit.testing.v1 import AppTest
 
+from app.streamlit_app import _progress_label
+from sifter import ProgressEvent
 from sifter.synthetic import SyntheticPeak, make_spectrum
 
 APP_PATH = Path(__file__).resolve().parents[2] / "app" / "streamlit_app.py"
@@ -69,6 +71,14 @@ def test_synthetic_upload_reaches_results_view_and_exports() -> None:
     assert any("Candidate comparison" in item.value for item in app.subheader)
     assert any("Covariance" in item.value for item in app.caption)
     assert app.get("progress")[-1].value == 100
+
+
+def test_progress_label_includes_counts_and_messages() -> None:
+    label = _progress_label(
+        ProgressEvent("screening", 2, 5, "windowed local candidates")
+    )
+
+    assert label == "Screening candidate models · 2/5 · windowed local candidates"
 
 
 def _app() -> AppTest:

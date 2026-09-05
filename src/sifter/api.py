@@ -45,10 +45,24 @@ from sifter.spectrum import Spectrum
 class AnalysisError(RuntimeError):
     """Terminal analysis failure retaining every candidate-level failure."""
 
-    def __init__(self, code: str, failures: tuple[CandidateFailure, ...]) -> None:
+    def __init__(
+        self,
+        code: str,
+        failures: tuple[CandidateFailure, ...],
+        candidate_scores: tuple[CandidateScore, ...] = (),
+    ) -> None:
         self.code = code
         self.failures = failures
-        super().__init__(f"{code}: {len(failures)} candidate fits failed")
+        self.candidate_scores = candidate_scores
+        if candidate_scores:
+            rejected = sum(score.status == "inadmissible" for score in candidate_scores)
+            failed = sum(score.status == "failed" for score in candidate_scores)
+            super().__init__(
+                f"{code}: no candidate remained rankable after validation "
+                f"({rejected} inadmissible, {failed} failed)"
+            )
+        else:
+            super().__init__(f"{code}: {len(failures)} candidate fits failed")
 
 
 def autofit(
@@ -75,12 +89,21 @@ def autofit(
     )
     emit_progress(progress, "preprocessing", 0, 1)
     preprocessing = preprocess_spectrum(spectrum, settings)
-    emit_progress(progress, "preprocessing", 1, 1)
     policy = search_policy(settings.search_mode)
     peak_counts = initial_peak_counts(
         preprocessing.detection,
         policy,
         max_peaks=settings.max_peaks,
+    )
+    emit_progress(
+        progress,
+        "preprocessing",
+        1,
+        1,
+        message=(
+            f"{len(preprocessing.proposals)} real-space proposals; "
+            f"candidate peak counts {', '.join(str(count) for count in peak_counts)}"
+        ),
     )
     if policy.exhaustive:
         candidates = build_candidates_for_counts(
@@ -100,12 +123,22 @@ def autofit(
             seed=settings.random_seed,
             max_nfev=policy.refinement_max_nfev,
         )
-        emit_progress(progress, "final_fitting", 0, len(tasks))
+        emit_progress(
+            progress,
+            "final_fitting",
+            0,
+            len(tasks),
+            message=f"exhaustive mode with {settings.workers} worker(s)",
+        )
         fit_results = list(
             execute_fit_tasks(
                 tasks,
                 workers=settings.workers,
-                on_progress=progress_for_phase(progress, "final_fitting"),
+                on_progress=progress_for_phase(
+                    progress,
+                    "final_fitting",
+                    message=f"exhaustive mode with {settings.workers} worker(s)",
+                ),
             )
         )
     else:
@@ -129,32 +162,58 @@ def autofit(
             workers=settings.workers,
         )
         if windowed_candidates:
-            emit_progress(progress, "screening", 0, len(windowed_candidates))
+            emit_progress(
+                progress,
+                "screening",
+                0,
+                len(windowed_candidates),
+                message="windowed local candidates",
+            )
             windowed_screening = screen_candidates(
                 spectrum,
                 windowed_candidates,
                 policy,
                 seed=_windowed_seed(settings.random_seed),
                 workers=settings.workers,
-                on_progress=progress_for_phase(progress, "screening"),
+                on_progress=progress_for_phase(
+                    progress,
+                    "screening",
+                    message="windowed local candidates",
+                ),
             )
             screening = (*screening, *windowed_screening)
         reference_candidates = build_reference_candidates(spectrum, settings)
         if reference_candidates:
-            emit_progress(progress, "screening", 0, len(reference_candidates))
+            emit_progress(
+                progress,
+                "screening",
+                0,
+                len(reference_candidates),
+                message="reference-seeded candidates",
+            )
             reference_screening = screen_candidates(
                 spectrum,
                 reference_candidates,
                 policy,
                 seed=_reference_seed(settings.random_seed),
                 workers=settings.workers,
-                on_progress=progress_for_phase(progress, "screening"),
+                on_progress=progress_for_phase(
+                    progress,
+                    "screening",
+                    message="reference-seeded candidates",
+                ),
             )
             screening = (*screening, *reference_screening)
         screening = _deduplicated_screening(screening)
         finalists = retain_diverse_finalists(screening, limit=policy.finalist_limit)
         fit_results = list(screening_failures(screening))
-        emit_progress(progress, "refinement", 0, len(finalists))
+        emit_progress(
+            progress,
+            "refinement",
+            0,
+            len(finalists),
+            message=f"{len(finalists)} finalist model(s) on the full spectrum",
+        )
         fit_results.extend(
             refine_finalists(
                 spectrum,
@@ -162,7 +221,11 @@ def autofit(
                 policy,
                 seed=settings.random_seed,
                 workers=settings.workers,
-                on_progress=progress_for_phase(progress, "refinement"),
+                on_progress=progress_for_phase(
+                    progress,
+                    "refinement",
+                    message="finalist full-spectrum fits",
+                ),
             )
         )
 
@@ -181,10 +244,15 @@ def autofit(
     )
     ranked = rank_candidates(scores, settings.shapes)
     best_score = next(
-        score
-        for score in ranked
-        if score.status == "valid" and score.aicc is not None and score.bic is not None
+        (
+            score
+            for score in ranked
+            if score.status == "valid" and score.aicc is not None and score.bic is not None
+        ),
+        None,
     )
+    if best_score is None:
+        raise AnalysisError("NO_RANKABLE_CANDIDATE", failures, ranked)
     best_fit = successful[best_score.spec]
     diagnostics = residual_diagnostics(best_fit.residuals)
     fit_warnings = list(diagnose_fit(best_fit, spectrum))

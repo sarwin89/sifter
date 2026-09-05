@@ -38,7 +38,13 @@ def preview_table(
 ) -> TablePreview:
     """Read at most 64 KiB and infer a supported delimiter and header."""
     payload = _read_source(source, limit=PREVIEW_LIMIT)
-    return _parse_preview(payload, delimiter=delimiter, header=header, skip_rows=skip_rows)
+    return _parse_preview(
+        payload,
+        delimiter=delimiter,
+        header=header,
+        skip_rows=skip_rows,
+        truncated=len(payload) == PREVIEW_LIMIT,
+    )
 
 
 def load_spectrum(
@@ -98,6 +104,7 @@ def _parse_preview(
     delimiter: DelimiterOption = "auto",
     header: HeaderMode = "auto",
     skip_rows: int = 0,
+    truncated: bool = False,
 ) -> TablePreview:
     if isinstance(skip_rows, bool) or skip_rows < 0:
         raise ValueError("skip_rows must be a nonnegative integer")
@@ -105,6 +112,8 @@ def _parse_preview(
         text = payload.decode("utf-8-sig")
     except UnicodeDecodeError as error:
         raise ValueError("table must be UTF-8 encoded") from error
+    if truncated and text and not text.endswith(("\n", "\r")):
+        text = text.rsplit("\n", 1)[0]
     lines = [line for line in text.splitlines()[skip_rows:] if line.strip()]
     if not lines:
         raise ValueError("table is empty")
@@ -113,6 +122,7 @@ def _parse_preview(
     )
     rows = _read_rows(lines, selected_delimiter)
     rows, ignored_trailing_column = _ignore_structurally_empty_trailing_columns(rows)
+    rows, ignored_empty_header_column = _ignore_empty_header_columns(rows, header)
     expected = len(rows[0])
     if expected < 2:
         raise ValueError("table must contain at least two columns")
@@ -130,14 +140,16 @@ def _parse_preview(
     if has_header:
         columns = tuple(cell.strip() for cell in rows[0])
         data_rows = rows[1:]
-        warnings: tuple[str, ...] = (
-            ("TRAILING_EMPTY_COLUMN_IGNORED",) if ignored_trailing_column else ()
+        warnings: tuple[str, ...] = _preview_warnings(
+            ignored_trailing_column=ignored_trailing_column,
+            ignored_empty_header_column=ignored_empty_header_column,
         )
     else:
         columns = tuple(f"column_{index}" for index in range(expected))
         data_rows = rows
-        warnings = ("HEADER_INFERRED_ABSENT",) + (
-            ("TRAILING_EMPTY_COLUMN_IGNORED",) if ignored_trailing_column else ()
+        warnings = ("HEADER_INFERRED_ABSENT",) + _preview_warnings(
+            ignored_trailing_column=ignored_trailing_column,
+            ignored_empty_header_column=ignored_empty_header_column,
         )
     if any(not column for column in columns) or len(set(columns)) != len(columns):
         raise ValueError("header columns must be nonempty and unique")
@@ -168,9 +180,10 @@ def _infer_delimiter(sample: str) -> Delimiter:
 
 
 def _read_rows(lines: list[str], delimiter: Delimiter) -> list[list[str]]:
-    character = " " if delimiter == "whitespace" else delimiter
-    reader = csv.reader(io.StringIO("\n".join(lines)), delimiter=character, skipinitialspace=True)
-    return [[cell.strip() for cell in row if delimiter != "whitespace" or cell] for row in reader]
+    if delimiter == "whitespace":
+        return [line.split() for line in lines]
+    reader = csv.reader(io.StringIO("\n".join(lines)), delimiter=delimiter, skipinitialspace=True)
+    return [[cell.strip() for cell in row] for row in reader]
 
 
 def _ignore_structurally_empty_trailing_columns(
@@ -185,6 +198,37 @@ def _ignore_structurally_empty_trailing_columns(
     width = meaningful_widths[0]
     ignored = any(len(row) > width for row in rows)
     return ([row[:width] for row in rows] if ignored else rows), ignored
+
+
+def _ignore_empty_header_columns(
+    rows: list[list[str]], header: HeaderMode
+) -> tuple[list[list[str]], bool]:
+    if header == "absent" or len(rows) < 2:
+        return rows, False
+    header_cells = rows[0]
+    nonempty_header_positions = [
+        index for index, cell in enumerate(header_cells) if cell.strip()
+    ]
+    if len(nonempty_header_positions) == len(header_cells):
+        return rows, False
+    data_width = len(nonempty_header_positions)
+    if data_width < 2 or any(len(row) != data_width for row in rows[1:]):
+        return rows, False
+    compact_header = [header_cells[index] for index in nonempty_header_positions]
+    return [compact_header, *rows[1:]], True
+
+
+def _preview_warnings(
+    *,
+    ignored_trailing_column: bool,
+    ignored_empty_header_column: bool,
+) -> tuple[str, ...]:
+    warnings: list[str] = []
+    if ignored_trailing_column:
+        warnings.append("TRAILING_EMPTY_COLUMN_IGNORED")
+    if ignored_empty_header_column:
+        warnings.append("EMPTY_HEADER_COLUMN_IGNORED")
+    return tuple(warnings)
 
 
 def _read_source(source: Source, *, limit: int | None = None) -> bytes:
