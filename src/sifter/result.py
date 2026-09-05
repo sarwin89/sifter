@@ -12,9 +12,11 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from sifter.config import JSONScalar, PeakShape, SearchMode, UncertaintyMode
+from sifter.context import MeasurementContext
 from sifter.diagnostics import DiagnosticWarning, ResidualDiagnostics
 from sifter.fitting import ParameterUncertainty
 from sifter.fourier import FourierDiagnostics
+from sifter.reference import FitReference
 from sifter.selection import CandidateScore
 
 if TYPE_CHECKING:
@@ -36,6 +38,8 @@ class AnalysisSettings:
     search_mode: SearchMode = "standard"
     workers: int = 1
     allow_broad_multimax_component: bool = False
+    measurement_context: MeasurementContext | None = None
+    reference: FitReference | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +81,7 @@ class ModelResult:
 class FitResult:
     """Stable, versioned output of the public analysis API."""
 
-    schema_version: Literal["sifter.fit_result.v1"]
+    schema_version: Literal["sifter.fit_result.v1", "sifter.fit_result.v2"]
     settings: AnalysisSettings
     source_metadata: Mapping[str, JSONScalar]
     x: NDArray[np.float64]
@@ -94,6 +98,8 @@ class FitResult:
     warnings: tuple[DiagnosticWarning, ...]
     observation_count: int
     sifter_version: str
+    measurement_context: MeasurementContext | None = None
+    reference: FitReference | None = None
 
     def plot(self) -> dict[str, "go.Figure"]:
         """Build publication-neutral interactive figures from this result."""
@@ -127,7 +133,7 @@ class FitResult:
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-oriented result dictionary with privacy-safe metadata."""
-        return {
+        payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "sifter_version": self.sifter_version,
             "settings": {
@@ -143,6 +149,14 @@ class FitResult:
                 "workers": self.settings.workers,
                 "allow_broad_multimax_component": (
                     self.settings.allow_broad_multimax_component
+                ),
+                "measurement_context": (
+                    None
+                    if self.settings.measurement_context is None
+                    else self.settings.measurement_context.to_dict()
+                ),
+                "reference": (
+                    None if self.settings.reference is None else self.settings.reference.to_dict()
                 ),
             },
             "source_metadata": _safe_metadata(self.source_metadata),
@@ -167,6 +181,14 @@ class FitResult:
             "uncertainty": _uncertainty_dict(self.uncertainty),
             "warnings": [_warning_dict(warning) for warning in self.warnings],
         }
+        if self.schema_version == "sifter.fit_result.v2":
+            payload["measurement_context"] = (
+                None
+                if self.measurement_context is None
+                else self.measurement_context.to_dict()
+            )
+            payload["reference"] = None if self.reference is None else self.reference.to_dict()
+        return payload
 
     def to_json(self) -> str:
         """Serialize deterministic standards-compliant JSON with nonfinite redaction."""

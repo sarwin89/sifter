@@ -14,8 +14,9 @@ from sifter.fitting import (
     bootstrap_uncertainty,
     covariance_uncertainty,
 )
-from sifter.models import ParameterLayout, build_candidates_for_counts
+from sifter.models import ModelSpec, ParameterLayout, build_candidates_for_counts
 from sifter.progress import ProgressCallback, emit_progress, progress_for_phase
+from sifter.reference import build_reference_candidates
 from sifter.reporting import DiagnosticWarning, diagnostic_warning
 from sifter.result import (
     AnalysisSettings,
@@ -89,6 +90,9 @@ def autofit(
             settings,
             peak_counts=peak_counts,
         )
+        candidates = _deduplicated_candidates(
+            (*candidates, *build_reference_candidates(spectrum, settings))
+        )
         tasks = build_fit_tasks(
             spectrum,
             candidates,
@@ -135,6 +139,18 @@ def autofit(
                 on_progress=progress_for_phase(progress, "screening"),
             )
             screening = (*screening, *windowed_screening)
+        reference_candidates = build_reference_candidates(spectrum, settings)
+        if reference_candidates:
+            emit_progress(progress, "screening", 0, len(reference_candidates))
+            reference_screening = screen_candidates(
+                spectrum,
+                reference_candidates,
+                policy,
+                seed=_reference_seed(settings.random_seed),
+                workers=settings.workers,
+                on_progress=progress_for_phase(progress, "screening"),
+            )
+            screening = (*screening, *reference_screening)
         screening = _deduplicated_screening(screening)
         finalists = retain_diverse_finalists(screening, limit=policy.finalist_limit)
         fit_results = list(screening_failures(screening))
@@ -226,7 +242,7 @@ def autofit(
         reduced_chi_squared=best_score.reduced_chi_squared,
     )
     result = FitResult(
-        schema_version="sifter.fit_result.v1",
+        schema_version="sifter.fit_result.v2",
         settings=AnalysisSettings(
             max_peaks=settings.max_peaks,
             shapes=settings.shapes,
@@ -239,6 +255,8 @@ def autofit(
             search_mode=settings.search_mode,
             workers=settings.workers,
             allow_broad_multimax_component=settings.allow_broad_multimax_component,
+            measurement_context=settings.measurement_context,
+            reference=settings.reference,
         ),
         source_metadata=frozen_metadata(spectrum.metadata),
         x=frozen_array(spectrum.x),
@@ -255,6 +273,8 @@ def autofit(
         warnings=tuple(fit_warnings),
         observation_count=spectrum.x.size,
         sifter_version=version("sifter"),
+        measurement_context=settings.measurement_context,
+        reference=settings.reference,
     )
     emit_progress(progress, "completion", 1, 1)
     return result
@@ -312,6 +332,14 @@ def _analysis_warnings(
 
 def _windowed_seed(seed: int) -> int:
     return (seed + 1_048_583) % (2**32)
+
+
+def _reference_seed(seed: int) -> int:
+    return (seed + 2_097_169) % (2**32)
+
+
+def _deduplicated_candidates(candidates: tuple[ModelSpec, ...]) -> tuple[ModelSpec, ...]:
+    return tuple(dict.fromkeys(candidates))
 
 
 def _deduplicated_screening(

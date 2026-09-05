@@ -1,7 +1,13 @@
 """Configuration and shared public types for SIFTER analyses."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias
+
+if TYPE_CHECKING:
+    from sifter.context import MeasurementContext
+    from sifter.reference import FitReference
 
 JSONScalar: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
@@ -35,6 +41,8 @@ class AutofitConfig:
     random_seed: int = 42
     workers: int = 1
     allow_broad_multimax_component: bool = False
+    measurement_context: MeasurementContext | None = None
+    reference: FitReference | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.max_peaks, bool) or self.max_peaks < 1:
@@ -64,3 +72,9 @@ class AutofitConfig:
             raise ValueError("workers must be a positive integer")
         if not isinstance(self.allow_broad_multimax_component, bool):
             raise ValueError("allow_broad_multimax_component must be a boolean")
+        if self.measurement_context is not None and not hasattr(
+            self.measurement_context, "to_dict"
+        ):
+            raise ValueError("measurement_context must be a MeasurementContext")
+        if self.reference is not None and not hasattr(self.reference, "to_dict"):
+            raise ValueError("reference must be a FitReference")

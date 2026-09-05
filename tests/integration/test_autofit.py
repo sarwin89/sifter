@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from sifter import AutofitConfig, ProgressEvent, autofit
+from sifter import AutofitConfig, FitReference, MeasurementContext, ProgressEvent, autofit
 from sifter.fitting import CandidateFit, ParameterUncertainty
 from sifter.models import ParameterLayout, build_candidates_for_counts
 from sifter.search import AdaptiveScreeningResult, ScreeningRecord
@@ -21,7 +21,7 @@ def test_autofit_returns_versioned_reproducible_result() -> None:
     first = autofit(spectrum, config=config)
     second = autofit(spectrum, config=config)
 
-    assert first.schema_version == "sifter.fit_result.v1"
+    assert first.schema_version == "sifter.fit_result.v2"
     assert first.best_model.peak_count == 2
     assert first.settings.random_seed == 17
     assert first.best_model.rmse < 0.03
@@ -85,6 +85,58 @@ def test_config_selects_covariance_or_bootstrap_uncertainty() -> None:
     assert covariance.uncertainty.method == "covariance"
     assert bootstrap.uncertainty.method == "bootstrap"
     assert bootstrap.uncertainty.successful_bootstraps == 100
+
+
+def test_measurement_context_alone_does_not_change_single_spectrum_fit() -> None:
+    spectrum = easy_one_peak_spectrum(seed=15)
+    common = dict(
+        max_peaks=1,
+        shapes=("gaussian",),
+        baseline_orders=(0,),
+        fourier=False,
+        random_seed=55,
+    )
+
+    plain = autofit(spectrum, config=AutofitConfig(**common))
+    with_context = autofit(
+        spectrum,
+        config=AutofitConfig(
+            **common,
+            measurement_context=MeasurementContext(
+                temperature=27.0,
+                temperature_unit="C",
+                laser_power=0.5,
+                laser_power_unit="mW",
+            ),
+        ),
+    )
+
+    np.testing.assert_allclose(plain.best_model.parameters, with_context.best_model.parameters)
+    assert with_context.schema_version == "sifter.fit_result.v2"
+    assert with_context.measurement_context is not None
+
+
+def test_wrong_reference_cannot_force_selected_model() -> None:
+    spectrum, _ = easy_two_peak_spectrum(seed=33)
+    config = AutofitConfig(
+        max_peaks=2,
+        shapes=("gaussian",),
+        baseline_orders=(0,),
+        fourier=False,
+        random_seed=61,
+        reference=FitReference(
+            shape="gaussian",
+            peaks=((5.0, -20.0, 1.0, None),),
+            baseline_order=0,
+        ),
+    )
+
+    result = autofit(spectrum, config=config)
+
+    assert result.best_model.peak_count == 2
+    assert result.reference is not None
+    assert any(score.peak_count == 1 for score in result.candidates)
+    assert any(score.peak_count == 2 for score in result.candidates)
 
 
 def test_standard_search_matches_exhaustive_winner_with_fewer_final_candidates() -> None:
@@ -213,7 +265,7 @@ def test_standard_search_adds_windowed_candidates_before_global_refinement(
 
     assert two_peak in refined_specs
     assert result.best_model.peak_count == 2
-    assert result.schema_version == "sifter.fit_result.v1"
+    assert result.schema_version == "sifter.fit_result.v2"
 
 
 def _screening_record(spec: object, *, bic: float) -> ScreeningRecord:
