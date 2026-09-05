@@ -2,9 +2,11 @@
 
 **Spectral Inference using Fourier Transforms for Energy Resolution**
 
-SIFTER is a local-first scientific Python project for reproducible decomposition of one-dimensional spectra. Version 0.1 will fit Gaussian, Lorentzian, and Voigt peak models in the original data domain while using Fourier-domain information only as an auxiliary diagnostic and initializer.
+SIFTER is a local-first scientific Python project for reproducible decomposition of one-dimensional spectra. Version 0.2 fits Gaussian, Lorentzian, and Voigt peak models in the original data domain while using Fourier-domain information only as an auxiliary diagnostic and initializer.
 
 Fourier evidence initializes and diagnoses fits; only the original observations determine parameters and model scores. SIFTER reports uncertainty and identifiability limitations rather than claiming resolution the data cannot support.
+
+Version 0.2 adds robust delimited text import controls, bounded staged search to at least ten peaks, process-parallel candidate fitting, live GUI progress, pre-fit real/Fourier previews, windowed progressive initialization with full-spectrum refinement, a default guard against one broad component spanning multiple resolved maxima, optional measurement context, reference-seeded candidates, and related-spectrum session plots.
 
 ## Install
 
@@ -20,7 +22,7 @@ SIFTER supports Python 3.11 through 3.13. Install the development environment wi
 python -m pip install -e ".[dev,gui]"
 ```
 
-The implementation follows the reviewed tasks in [docs/superpowers/plans/2026-09-03-sifter-v0.1.md](docs/superpowers/plans/2026-09-03-sifter-v0.1.md).
+The v0.2 implementation follows the reviewed tasks in [docs/superpowers/plans/2026-09-04-sifter-v0.2.md](docs/superpowers/plans/2026-09-04-sifter-v0.2.md).
 
 ## Local GUI
 
@@ -36,15 +38,18 @@ The browser interface runs on `localhost`; SIFTER does not upload spectra or sen
 ## Python API
 
 ```python
-from sifter import Spectrum, autofit
+from sifter import AutofitConfig, MeasurementContext, Spectrum, autofit
 
 spectrum = Spectrum(x, intensity, x_name="Raman shift", x_unit="cm⁻¹")
 result = autofit(
     spectrum,
-    max_peaks=6,
-    shapes=("gaussian", "lorentzian", "voigt"),
-    fourier=True,
-    random_seed=42,
+    config=AutofitConfig(
+        max_peaks=10,
+        shapes=("gaussian", "lorentzian", "voigt"),
+        fourier=True,
+        random_seed=42,
+        measurement_context=MeasurementContext(temperature=300.0, temperature_unit="K"),
+    ),
 )
 
 print(result.best_model.peaks)
@@ -52,7 +57,7 @@ print(result.candidates[0].delta_bic)
 result.to_dataframe().to_csv("sifter.fit.csv", index=False)
 ```
 
-Warnings use stable codes and plain-language messages. Treat poor-resolution, near-bound, correlation, truncation, and unavailable-uncertainty warnings as limits on interpretation—not optimizer noise to hide.
+Warnings use stable codes and plain-language messages. Treat poor-resolution, broad-component, near-bound, correlation, truncation, and unavailable-uncertainty warnings as limits on interpretation, not optimizer noise to hide.
 
 Read the [scientific method](docs/scientific-method.md), [result schema](docs/result-schema.md), [privacy policy](docs/privacy.md), and [benchmark guide](benchmarks/README.md).
 

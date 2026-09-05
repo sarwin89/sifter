@@ -5,19 +5,18 @@ from importlib.metadata import version
 
 import numpy as np
 
-from sifter.baseline import asls_baseline
-from sifter.config import AutofitConfig, PeakShape
-from sifter.detection import detect_peak_proposals
+from sifter.config import AutofitConfig, PeakShape, SearchMode
 from sifter.diagnostics import diagnose_fit, residual_diagnostics
+from sifter.execution import build_fit_tasks, execute_fit_tasks
 from sifter.fitting import (
     CandidateFailure,
     CandidateFit,
     bootstrap_uncertainty,
     covariance_uncertainty,
-    fit_candidate,
 )
-from sifter.fourier import analyze_fourier
-from sifter.models import ParameterLayout, build_candidates
+from sifter.models import ModelSpec, ParameterLayout, build_candidates_for_counts
+from sifter.progress import ProgressCallback, emit_progress, progress_for_phase
+from sifter.reference import build_reference_candidates
 from sifter.reporting import DiagnosticWarning, diagnostic_warning
 from sifter.result import (
     AnalysisSettings,
@@ -27,6 +26,18 @@ from sifter.result import (
     frozen_array,
     frozen_metadata,
 )
+from sifter.search import (
+    ScreeningRecord,
+    adaptive_screening,
+    initial_peak_counts,
+    preprocess_spectrum,
+    refine_finalists,
+    retain_diverse_finalists,
+    screen_candidates,
+    screening_failures,
+    search_policy,
+)
+from sifter.search.windowing import build_windowed_candidates
 from sifter.selection import CandidateScore, rank_candidates, score_candidate
 from sifter.spectrum import Spectrum
 
@@ -48,6 +59,9 @@ def autofit(
     shapes: tuple[PeakShape, ...] | None = None,
     fourier: bool | None = None,
     random_seed: int | None = None,
+    search_mode: SearchMode | None = None,
+    workers: int | None = None,
+    progress: ProgressCallback | None = None,
 ) -> FitResult:
     """Run initialization, candidate fitting, ranking, and uncertainty."""
     settings = _resolved_config(
@@ -56,41 +70,115 @@ def autofit(
         shapes=shapes,
         fourier=fourier,
         random_seed=random_seed,
+        search_mode=search_mode,
+        workers=workers,
     )
-    baseline = asls_baseline(spectrum.intensity)
-    adjusted = spectrum.intensity - baseline
-    proposal_spectrum = Spectrum(
-        spectrum.x,
-        adjusted,
-        sigma=spectrum.sigma,
-        x_name=spectrum.x_name,
-        x_unit=spectrum.x_unit,
-        intensity_name=spectrum.intensity_name,
-        metadata=spectrum.metadata,
+    emit_progress(progress, "preprocessing", 0, 1)
+    preprocessing = preprocess_spectrum(spectrum, settings)
+    emit_progress(progress, "preprocessing", 1, 1)
+    policy = search_policy(settings.search_mode)
+    peak_counts = initial_peak_counts(
+        preprocessing.detection,
+        policy,
+        max_peaks=settings.max_peaks,
     )
-    proposals = detect_peak_proposals(proposal_spectrum, max_peaks=settings.max_peaks)
-    fourier_result = (
-        analyze_fourier(
+    if policy.exhaustive:
+        candidates = build_candidates_for_counts(
             spectrum,
-            adjusted,
-            interpolate_nonuniform=settings.interpolate_nonuniform_fft,
+            preprocessing.proposals,
+            preprocessing.fourier,
+            settings,
+            peak_counts=peak_counts,
         )
-        if settings.fourier
-        else None
-    )
-    candidates = build_candidates(spectrum, proposals, fourier_result, settings)
-    seed_sequences = np.random.SeedSequence(settings.random_seed).spawn(len(candidates))
-    fit_results: list[CandidateFit | CandidateFailure] = []
-    for candidate, seed_sequence in zip(candidates, seed_sequences, strict=True):
-        candidate_seed = int(seed_sequence.generate_state(1, dtype=np.uint32)[0])
-        fit_results.append(fit_candidate(spectrum, candidate, starts=8, seed=candidate_seed))
+        candidates = _deduplicated_candidates(
+            (*candidates, *build_reference_candidates(spectrum, settings))
+        )
+        tasks = build_fit_tasks(
+            spectrum,
+            candidates,
+            starts=policy.refinement_starts,
+            seed=settings.random_seed,
+            max_nfev=policy.refinement_max_nfev,
+        )
+        emit_progress(progress, "final_fitting", 0, len(tasks))
+        fit_results = list(
+            execute_fit_tasks(
+                tasks,
+                workers=settings.workers,
+                on_progress=progress_for_phase(progress, "final_fitting"),
+            )
+        )
+    else:
+        assert policy.finalist_limit is not None
+        adaptive = adaptive_screening(
+            spectrum,
+            preprocessing,
+            settings,
+            policy,
+            initial_counts=peak_counts,
+            seed=settings.random_seed,
+            progress=progress,
+        )
+        screening = adaptive.records
+        windowed_candidates = build_windowed_candidates(
+            spectrum,
+            preprocessing,
+            settings,
+            policy,
+            seed=settings.random_seed,
+            workers=settings.workers,
+        )
+        if windowed_candidates:
+            emit_progress(progress, "screening", 0, len(windowed_candidates))
+            windowed_screening = screen_candidates(
+                spectrum,
+                windowed_candidates,
+                policy,
+                seed=_windowed_seed(settings.random_seed),
+                workers=settings.workers,
+                on_progress=progress_for_phase(progress, "screening"),
+            )
+            screening = (*screening, *windowed_screening)
+        reference_candidates = build_reference_candidates(spectrum, settings)
+        if reference_candidates:
+            emit_progress(progress, "screening", 0, len(reference_candidates))
+            reference_screening = screen_candidates(
+                spectrum,
+                reference_candidates,
+                policy,
+                seed=_reference_seed(settings.random_seed),
+                workers=settings.workers,
+                on_progress=progress_for_phase(progress, "screening"),
+            )
+            screening = (*screening, *reference_screening)
+        screening = _deduplicated_screening(screening)
+        finalists = retain_diverse_finalists(screening, limit=policy.finalist_limit)
+        fit_results = list(screening_failures(screening))
+        emit_progress(progress, "refinement", 0, len(finalists))
+        fit_results.extend(
+            refine_finalists(
+                spectrum,
+                finalists,
+                policy,
+                seed=settings.random_seed,
+                workers=settings.workers,
+                on_progress=progress_for_phase(progress, "refinement"),
+            )
+        )
 
     failures = tuple(result for result in fit_results if isinstance(result, CandidateFailure))
     successful = {result.spec: result for result in fit_results if isinstance(result, CandidateFit)}
     if not successful:
         raise AnalysisError("NO_VALID_CANDIDATE", failures)
 
-    scores = tuple(score_candidate(result, spectrum) for result in fit_results)
+    scores = tuple(
+        score_candidate(
+            result,
+            spectrum,
+            allow_broad_multimax_component=settings.allow_broad_multimax_component,
+        )
+        for result in fit_results
+    )
     ranked = rank_candidates(scores, settings.shapes)
     best_score = next(
         score
@@ -100,17 +188,20 @@ def autofit(
     best_fit = successful[best_score.spec]
     diagnostics = residual_diagnostics(best_fit.residuals)
     fit_warnings = list(diagnose_fit(best_fit, spectrum))
-    fit_warnings.extend(_analysis_warnings(best_score, fourier_result))
-    uncertainty = (
-        covariance_uncertainty(best_fit, spectrum)
-        if settings.uncertainty == "covariance"
-        else bootstrap_uncertainty(
+    fit_warnings.extend(_analysis_warnings(best_score, preprocessing.fourier))
+    uncertainty_total = 1 if settings.uncertainty == "covariance" else settings.bootstrap_samples
+    emit_progress(progress, "uncertainty", 0, uncertainty_total)
+    if settings.uncertainty == "covariance":
+        uncertainty = covariance_uncertainty(best_fit, spectrum)
+        emit_progress(progress, "uncertainty", 1, 1)
+    else:
+        uncertainty = bootstrap_uncertainty(
             best_fit,
             spectrum,
             samples=settings.bootstrap_samples,
             seed=settings.random_seed,
+            on_progress=progress_for_phase(progress, "uncertainty"),
         )
-    )
     if uncertainty.warning is not None:
         fit_warnings.append(uncertainty.warning)
 
@@ -150,8 +241,8 @@ def autofit(
         observation_count=spectrum.x.size,
         reduced_chi_squared=best_score.reduced_chi_squared,
     )
-    return FitResult(
-        schema_version="sifter.fit_result.v1",
+    result = FitResult(
+        schema_version="sifter.fit_result.v2",
         settings=AnalysisSettings(
             max_peaks=settings.max_peaks,
             shapes=settings.shapes,
@@ -161,6 +252,11 @@ def autofit(
             uncertainty=settings.uncertainty,
             bootstrap_samples=settings.bootstrap_samples,
             random_seed=settings.random_seed,
+            search_mode=settings.search_mode,
+            workers=settings.workers,
+            allow_broad_multimax_component=settings.allow_broad_multimax_component,
+            measurement_context=settings.measurement_context,
+            reference=settings.reference,
         ),
         source_metadata=frozen_metadata(spectrum.metadata),
         x=frozen_array(spectrum.x),
@@ -171,13 +267,17 @@ def autofit(
         intensity_name=spectrum.intensity_name,
         best_model=model,
         candidates=ranked,
-        fourier=fourier_result,
+        fourier=preprocessing.fourier,
         residual_diagnostics=diagnostics,
         uncertainty=uncertainty,
         warnings=tuple(fit_warnings),
         observation_count=spectrum.x.size,
         sifter_version=version("sifter"),
+        measurement_context=settings.measurement_context,
+        reference=settings.reference,
     )
+    emit_progress(progress, "completion", 1, 1)
+    return result
 
 
 def _resolved_config(
@@ -187,6 +287,8 @@ def _resolved_config(
     shapes: tuple[PeakShape, ...] | None,
     fourier: bool | None,
     random_seed: int | None,
+    search_mode: SearchMode | None,
+    workers: int | None,
 ) -> AutofitConfig:
     resolved = AutofitConfig() if config is None else config
     if max_peaks is not None:
@@ -197,6 +299,10 @@ def _resolved_config(
         resolved = replace(resolved, fourier=fourier)
     if random_seed is not None:
         resolved = replace(resolved, random_seed=random_seed)
+    if search_mode is not None:
+        resolved = replace(resolved, search_mode=search_mode)
+    if workers is not None:
+        resolved = replace(resolved, workers=workers)
     return resolved
 
 
@@ -222,3 +328,37 @@ def _analysis_warnings(
                 )
             )
     return tuple(warnings)
+
+
+def _windowed_seed(seed: int) -> int:
+    return (seed + 1_048_583) % (2**32)
+
+
+def _reference_seed(seed: int) -> int:
+    return (seed + 2_097_169) % (2**32)
+
+
+def _deduplicated_candidates(candidates: tuple[ModelSpec, ...]) -> tuple[ModelSpec, ...]:
+    return tuple(dict.fromkeys(candidates))
+
+
+def _deduplicated_screening(
+    records: tuple[ScreeningRecord, ...],
+) -> tuple[ScreeningRecord, ...]:
+    best_by_spec: dict[object, ScreeningRecord] = {}
+    order: list[object] = []
+    for record in records:
+        if record.spec not in best_by_spec:
+            order.append(record.spec)
+            best_by_spec[record.spec] = record
+            continue
+        previous = best_by_spec[record.spec]
+        if _screening_sort_value(record) < _screening_sort_value(previous):
+            best_by_spec[record.spec] = record
+    return tuple(best_by_spec[spec] for spec in order)
+
+
+def _screening_sort_value(record: ScreeningRecord) -> tuple[float, int]:
+    failed = 1 if record.screening_bic is None or record.parameters is None else 0
+    bic = np.inf if record.screening_bic is None else record.screening_bic
+    return bic, failed

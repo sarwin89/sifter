@@ -25,3 +25,14 @@ jobs:
       - run: python -m mypy src/sifter
       - run: python -m pytest --cov=sifter --cov-report=term-missing --cov-fail-under=90
       - run: python -m build
+
+  windows-spawn:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pytest tests/unit/test_execution.py tests/integration/test_autofit.py -q

@@ -6,8 +6,10 @@ from typing import Literal
 import numpy as np
 
 from sifter.config import PeakShape
+from sifter.detection import detect_peak_proposals
 from sifter.fitting import CandidateFailure, CandidateFit
-from sifter.models import ModelSpec
+from sifter.lineshapes import gaussian_fwhm, lorentzian_fwhm, voigt_fwhm
+from sifter.models import ModelSpec, PeakStart
 from sifter.spectrum import Spectrum
 
 
@@ -25,7 +27,7 @@ class CandidateScore:
     """One row in the complete candidate comparison table."""
 
     spec: ModelSpec
-    status: Literal["valid", "failed"]
+    status: Literal["valid", "failed", "inadmissible"]
     parameter_count: int
     rss: float | None
     rmse: float | None
@@ -66,10 +68,18 @@ def unweighted_information_criteria(*, n: int, p: int, rss: float) -> Informatio
     )
 
 
-def score_candidate(result: CandidateFit | CandidateFailure, spectrum: Spectrum) -> CandidateScore:
+def score_candidate(
+    result: CandidateFit | CandidateFailure,
+    spectrum: Spectrum,
+    *,
+    allow_broad_multimax_component: bool = False,
+) -> CandidateScore:
     """Convert a fit or failure into one complete comparison row."""
     parameter_count = len(result.spec.lower_bounds)
-    if isinstance(result, CandidateFailure):
+    if isinstance(result, CandidateFailure) or result.status != "converged":
+        failure_code = (
+            result.code if isinstance(result, CandidateFailure) else "BUDGET_EXHAUSTED"
+        )
         return CandidateScore(
             spec=result.spec,
             status="failed",
@@ -83,7 +93,25 @@ def score_candidate(result: CandidateFit | CandidateFailure, spectrum: Spectrum)
             residual_variance=None,
             reduced_chi_squared=None,
             warnings=(),
-            failure_code=result.code,
+            failure_code=failure_code,
+        )
+
+    violation = _component_multimax_violation(result, spectrum)
+    if violation is not None and not allow_broad_multimax_component:
+        return CandidateScore(
+            spec=result.spec,
+            status="inadmissible",
+            parameter_count=parameter_count,
+            rss=None,
+            rmse=None,
+            aic=None,
+            aicc=None,
+            bic=None,
+            delta_bic=None,
+            residual_variance=None,
+            reduced_chi_squared=None,
+            warnings=(violation,),
+            failure_code=violation,
         )
 
     observation_count = spectrum.x.size
@@ -113,6 +141,8 @@ def score_candidate(result: CandidateFit | CandidateFailure, spectrum: Spectrum)
             else float(np.dot(standardized, standardized) / degrees_of_freedom)
         )
     warnings = () if criteria.aicc is not None else ("AICC_UNDEFINED",)
+    if violation is not None:
+        warnings = (*warnings, "BROAD_MULTIMAX_COMPONENT_ALLOWED")
     return CandidateScore(
         spec=result.spec,
         status="valid",
@@ -178,3 +208,49 @@ def rank_candidates(
             for score in ranked
         ]
     return tuple(ranked)
+
+
+def _component_multimax_violation(result: CandidateFit, spectrum: Spectrum) -> str | None:
+    baseline_adjusted = spectrum.intensity - result.baseline
+    try:
+        proposal_spectrum = Spectrum(
+            spectrum.x,
+            baseline_adjusted,
+            sigma=spectrum.sigma,
+            x_name=spectrum.x_name,
+            x_unit=spectrum.x_unit,
+            intensity_name=spectrum.intensity_name,
+            metadata=spectrum.metadata,
+        )
+    except ValueError:
+        return None
+    proposals = detect_peak_proposals(
+        proposal_spectrum,
+        max_peaks=min(max(2, result.spec.peak_count * 3), 20),
+    )
+    if len(proposals) < 2:
+        return None
+    for peak in result.peaks:
+        half_width = _peak_fwhm(result.spec.shape, peak) / 2.0
+        maxima_in_component = sum(
+            peak.center - half_width <= proposal.center <= peak.center + half_width
+            for proposal in proposals
+        )
+        if maxima_in_component > 1:
+            return "COMPONENT_SPANS_MULTIPLE_MAXIMA"
+    return None
+
+
+def _peak_fwhm(shape: str, peak: PeakStart) -> float:
+    if shape == "gaussian":
+        sigma = peak.sigma
+        assert sigma is not None
+        return gaussian_fwhm(sigma)
+    if shape == "lorentzian":
+        gamma = peak.gamma
+        assert gamma is not None
+        return lorentzian_fwhm(gamma)
+    sigma = peak.sigma
+    gamma = peak.gamma
+    assert sigma is not None and gamma is not None
+    return voigt_fwhm(sigma=sigma, gamma=gamma)

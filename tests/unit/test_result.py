@@ -2,7 +2,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from sifter import AutofitConfig, autofit
+from sifter import AutofitConfig, __version__, autofit
 from tests.helpers import easy_one_peak_spectrum
 
 
@@ -19,9 +19,12 @@ def test_result_records_version_provenance_and_immutable_arrays() -> None:
         ),
     )
 
-    assert result.schema_version == "sifter.fit_result.v1"
-    assert result.sifter_version == "0.1.0"
+    assert result.schema_version == "sifter.fit_result.v2"
+    assert result.sifter_version == __version__
     assert result.settings.random_seed == 19
+    assert result.settings.search_mode == "standard"
+    assert not result.settings.allow_broad_multimax_component
+    assert result.to_dict()["settings"]["allow_broad_multimax_component"] is False
     assert result.observation_count == spectrum.x.size
     assert result.source_metadata == spectrum.metadata
     assert not result.x.flags.writeable
@@ -50,6 +53,7 @@ def test_override_arguments_replace_only_requested_config_values() -> None:
         shapes=("gaussian",),
         fourier=False,
         random_seed=9,
+        search_mode="fast",
     )
 
     assert result.settings.max_peaks == 1
@@ -57,3 +61,4 @@ def test_override_arguments_replace_only_requested_config_values() -> None:
     assert result.settings.baseline_orders == (0,)
     assert result.settings.fourier is False
     assert result.settings.random_seed == 9
+    assert result.settings.search_mode == "fast"

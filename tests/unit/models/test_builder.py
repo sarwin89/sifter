@@ -1,8 +1,9 @@
 import numpy as np
+import pytest
 
 from sifter import AutofitConfig, Spectrum
 from sifter.detection import PeakProposal
-from sifter.models import ParameterLayout, build_candidates
+from sifter.models import ParameterLayout, build_candidates, build_candidates_for_counts
 
 
 def test_candidate_builder_includes_every_simpler_count_deterministically() -> None:
@@ -68,6 +69,54 @@ def test_no_proposals_still_builds_one_peak_fallback() -> None:
     assert all(
         spec.starts == tuple(sorted(spec.starts, key=lambda peak: peak.center)) for spec in specs
     )
+
+
+def test_explicit_count_builder_uses_only_requested_counts_deterministically() -> None:
+    proposals = (
+        PeakProposal(2.0, 0.2, 5.0, frozenset({"prominence"})),
+        PeakProposal(5.0, 0.2, 4.0, frozenset({"derivative"})),
+        PeakProposal(8.0, 0.2, 3.0, frozenset({"prominence"})),
+    )
+    config = AutofitConfig(
+        max_peaks=5,
+        shapes=("gaussian", "voigt"),
+        baseline_orders=(0, 1),
+    )
+
+    first = build_candidates_for_counts(
+        _example_spectrum(),
+        proposals,
+        None,
+        config,
+        peak_counts=(5, 1, 3, 3),
+    )
+    second = build_candidates_for_counts(
+        _example_spectrum(),
+        proposals,
+        None,
+        config,
+        peak_counts=(5, 1, 3, 3),
+    )
+
+    assert first == second
+    assert {spec.peak_count for spec in first} == {1, 3, 5}
+    assert len(first) == 3 * 2 * 2
+
+
+@pytest.mark.parametrize("peak_counts", [(), (0,), (6,)])
+def test_explicit_count_builder_rejects_empty_or_out_of_range_counts(
+    peak_counts: tuple[int, ...],
+) -> None:
+    config = AutofitConfig(max_peaks=5, shapes=("gaussian",), baseline_orders=(0,))
+
+    with pytest.raises(ValueError, match="peak_counts"):
+        build_candidates_for_counts(
+            _example_spectrum(),
+            (),
+            None,
+            config,
+            peak_counts=peak_counts,
+        )
 
 
 def _example_spectrum() -> Spectrum:

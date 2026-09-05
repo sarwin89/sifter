@@ -4,6 +4,6 @@ SIFTER is local-first. Spectrum content never leaves the machine: the package ha
 
 Keep experimental inputs under ignored `data/` or `private/` directories. Keep generated analyses under ignored `results/`, `outputs/`, `reports/`, or `benchmark_results/`. Files matching `*.experimental.csv`, `*.fit.json`, `*.fit.csv`, and `*.fit.png` are ignored by design.
 
-Public tests, examples, screenshots, and benchmarks must use deterministic synthetic spectra. Serialized result metadata strips directory components from path/file fields and retains only a basename. Do not place credentials, sample identifiers, full paths, or copied data rows in metadata, logs, issues, or commits.
+Public tests, examples, screenshots, and benchmarks must use deterministic synthetic spectra. Serialized result metadata strips directory components from path/file fields and retains only a basename. Measurement context and generic condition labels are written into v2 JSON exports, so do not place credentials, private sample identifiers, full paths, or copied data rows in metadata, context, logs, issues, or commits.
 
-Exports are created only after an explicit API call or download action. Review files before sharing them: numerical arrays are intentionally included in the versioned JSON result for reproducibility.
+Exports are created only after an explicit API call or download action. Reference fits and related-spectrum history remain local to the Python object or Streamlit session unless the user downloads or writes an export. Review files before sharing them: numerical arrays are intentionally included in the versioned JSON result for reproducibility.

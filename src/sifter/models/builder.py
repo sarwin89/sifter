@@ -19,11 +19,37 @@ def build_candidates(
     """Build every eligible simpler count, family, and baseline candidate."""
     initial_count = max(1, len(proposals))
     largest_count = min(config.max_peaks, initial_count + 2)
+    return build_candidates_for_counts(
+        spectrum,
+        proposals,
+        fourier,
+        config,
+        peak_counts=tuple(range(1, largest_count + 1)),
+    )
+
+
+def build_candidates_for_counts(
+    spectrum: Spectrum,
+    proposals: tuple[PeakProposal, ...],
+    fourier: FourierDiagnostics | None,
+    config: AutofitConfig,
+    *,
+    peak_counts: tuple[int, ...],
+) -> tuple[ModelSpec, ...]:
+    """Build configured candidate families for exactly the requested peak counts."""
+    if not peak_counts or any(
+        isinstance(count, bool) or count < 1 or count > config.max_peaks
+        for count in peak_counts
+    ):
+        raise ValueError("peak_counts must contain integers from 1 through config.max_peaks")
     candidates: list[ModelSpec] = []
-    for peak_count in range(1, largest_count + 1):
+    baseline_starts = {
+        order: fit_polynomial_baseline(spectrum, order=order).coefficients
+        for order in sorted(config.baseline_orders)
+    }
+    for peak_count in sorted(set(peak_counts)):
         centers, proposal_widths = _candidate_centers(spectrum, proposals, fourier, peak_count)
-        for baseline_order in sorted(config.baseline_orders):
-            baseline = fit_polynomial_baseline(spectrum, order=baseline_order)
+        for baseline_order, baseline_start in baseline_starts.items():
             for shape in config.shapes:
                 candidates.append(
                     _build_spec(
@@ -31,7 +57,7 @@ def build_candidates(
                         shape=shape,
                         peak_count=peak_count,
                         baseline_order=baseline_order,
-                        baseline_start=baseline.coefficients,
+                        baseline_start=baseline_start,
                         centers=centers,
                         proposal_widths=proposal_widths,
                     )
