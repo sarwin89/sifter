@@ -344,7 +344,7 @@ def main() -> None:
         fit_status = st.status("Preparing analysis…", expanded=False)
 
         def report_progress(event: ProgressEvent) -> None:
-            label = PHASE_LABELS[event.phase]
+            label = _progress_label(event)
             progress_bar.progress(_overall_progress(event), text=label)
             fit_status.update(
                 label=label,
@@ -387,7 +387,7 @@ def main() -> None:
         except (AnalysisError, TypeError, ValueError) as error:
             st.session_state.pop("fit_result", None)
             fit_status.update(label="Analysis failed", state="error", expanded=True)
-            st.error(f"SIFTER could not complete the analysis. {error}")
+            st.error(f"SIFTER could not complete the analysis. {_analysis_error_message(error)}")
 
     result = st.session_state.get("fit_result")
     if isinstance(result, FitResult):
@@ -641,6 +641,39 @@ def _overall_progress(event: ProgressEvent) -> int:
     start, end = ranges[event.phase]
     fraction = 1.0 if event.total == 0 else event.completed / event.total
     return round(start + (end - start) * fraction)
+
+
+def _progress_label(event: ProgressEvent) -> str:
+    label = PHASE_LABELS[event.phase]
+    if event.total > 0:
+        label = f"{label} · {event.completed}/{event.total}"
+    if event.message:
+        label = f"{label} · {event.message}"
+    return label
+
+
+def _analysis_error_message(error: Exception) -> str:
+    if isinstance(error, AnalysisError) and error.code == "NO_RANKABLE_CANDIDATE":
+        rejection_counts = (
+            pd.Series(
+                [
+                    score.failure_code or score.status
+                    for score in error.candidate_scores
+                ]
+            )
+            .value_counts()
+            .to_dict()
+        )
+        common = ", ".join(
+            f"{code}: {count}" for code, count in rejection_counts.items()
+        )
+        advice = (
+            "No candidate remained rankable after validation. "
+            "If this is a known broad physical band, enable the advanced broad-band "
+            "override; otherwise increase the peak limit or narrow the fitted range."
+        )
+        return f"{advice} Rejections: {common or 'none'}."
+    return str(error)
 
 
 def _styles() -> None:

@@ -67,6 +67,37 @@ def test_preview_warns_and_ignores_structurally_empty_trailing_column() -> None:
     assert "TRAILING_EMPTY_COLUMN_IGNORED" in preview.warnings
 
 
+def test_preview_ignores_blank_header_cell_from_double_tab_export() -> None:
+    payload = b"#Wave\t\t#Intensity\n1.199206\t57.852863\n1.199296\t44.240425\n"
+
+    preview = preview_table(io.BytesIO(payload), delimiter="\t")
+
+    assert preview.columns == ("#Wave", "#Intensity")
+    assert preview.rows == (("1.199206", "57.852863"), ("1.199296", "44.240425"))
+    assert "EMPTY_HEADER_COLUMN_IGNORED" in preview.warnings
+
+
+def test_whitespace_delimiter_splits_tabs_and_repeated_spaces() -> None:
+    payload = b"wave(energy)\tintensity\n1.50\t12.0\n1.60   15.5\n"
+
+    preview = preview_table(io.BytesIO(payload), delimiter="whitespace")
+
+    assert preview.columns == ("wave(energy)", "intensity")
+    assert preview.rows == (("1.50", "12.0"), ("1.60", "15.5"))
+
+
+def test_preview_drops_truncated_tail_before_validating_rows() -> None:
+    rows = ["#Wave\t\t#Intensity"]
+    rows.extend(f"{1.0 + index / 10_000:.6f}\t{index:.1f}" for index in range(6000))
+    payload = "\n".join(rows).encode()
+
+    preview = preview_table(io.BytesIO(payload), delimiter="\t")
+
+    assert preview.columns == ("#Wave", "#Intensity")
+    assert all(len(row) == 2 for row in preview.rows)
+    assert preview.rows[-1][0].startswith("1.")
+
+
 def test_preview_preserves_quoted_fields() -> None:
     preview = preview_table(io.BytesIO(b'x,signal,label\n1,2,"alpha, beta"\n'))
 
