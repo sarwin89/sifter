@@ -11,10 +11,12 @@ from sifter import (
     AnalysisError,
     AutofitConfig,
     FitResult,
+    MeasurementContext,
     ProgressEvent,
     SpectrumPreview,
     autofit,
     preview_spectrum,
+    summarize_related_spectra,
 )
 from sifter.io import DelimiterOption, HeaderMode, load_spectrum, preview_table
 from sifter.plotting import render_fit_png
@@ -55,6 +57,7 @@ PHASE_LABELS = {
 
 def main() -> None:
     st.set_page_config(page_title="SIFTER", page_icon="◌", layout="wide")
+    st.session_state.setdefault("fit_history", [])
     _styles()
     st.markdown('<p class="eyebrow">LOCAL SPECTRAL INFERENCE</p>', unsafe_allow_html=True)
     st.title("SIFTER")
@@ -187,6 +190,15 @@ def main() -> None:
         bootstrap_samples = 250
         random_seed = 42
         workers = 1
+        allow_broad_multimax_component = False
+        temperature_enabled = False
+        temperature_value = 300.0
+        temperature_unit = "K"
+        laser_enabled = False
+        laser_power = 1.0
+        laser_power_unit = "mW"
+        condition_name = ""
+        condition_value = ""
         with st.expander("Advanced settings", expanded=False):
             selected_baselines = st.multiselect(
                 "Baseline polynomial orders",
@@ -228,6 +240,69 @@ def main() -> None:
                     help="Parallelizes independent candidate models with deterministic seeds.",
                 )
             )
+            allow_broad_multimax_component = st.checkbox(
+                "Allow known broad band across resolved maxima",
+                value=False,
+                key="allow_broad_multimax_component",
+                help=(
+                    "Records an explicit override and allows otherwise "
+                    "structural-violation candidates."
+                ),
+            )
+            st.markdown("Measurement context")
+            context_columns = st.columns(2)
+            with context_columns[0]:
+                temperature_enabled = st.checkbox(
+                    "Record temperature",
+                    value=False,
+                    key="record_temperature",
+                )
+                temperature_value = float(
+                    st.number_input(
+                        "Temperature",
+                        value=300.0,
+                        step=1.0,
+                        key="temperature_value",
+                    )
+                )
+                temperature_unit = st.selectbox(
+                    "Temperature unit",
+                    ("K", "C"),
+                    key="temperature_unit",
+                )
+            with context_columns[1]:
+                laser_enabled = st.checkbox(
+                    "Record laser power",
+                    value=False,
+                    key="record_laser_power",
+                )
+                laser_power = float(
+                    st.number_input(
+                        "Laser power",
+                        min_value=0.0,
+                        value=1.0,
+                        step=0.1,
+                        key="laser_power_value",
+                    )
+                )
+                laser_power_unit = st.selectbox(
+                    "Laser power unit",
+                    ("nW", "uW", "microW", "mW", "W"),
+                    index=3,
+                    key="laser_power_unit",
+                )
+            generic_columns = st.columns(2)
+            with generic_columns[0]:
+                condition_name = st.text_input(
+                    "Condition name",
+                    key="condition_name",
+                    help="Optional label such as sample, polarization, or acquisition series.",
+                )
+            with generic_columns[1]:
+                condition_value = st.text_input(
+                    "Condition value",
+                    key="condition_value",
+                )
         estimated_candidates = max_peaks * len(selected_shapes) * len(selected_baselines)
         st.caption(f"Search ceiling: {estimated_candidates} candidate fits · seed {random_seed}")
         if uncertainty_mode == "bootstrap":
@@ -288,12 +363,27 @@ def main() -> None:
                 bootstrap_samples=bootstrap_samples,
                 random_seed=random_seed,
                 workers=workers,
+                allow_broad_multimax_component=allow_broad_multimax_component,
+                measurement_context=_measurement_context(
+                    temperature_enabled=temperature_enabled,
+                    temperature_value=temperature_value,
+                    temperature_unit=temperature_unit,
+                    laser_enabled=laser_enabled,
+                    laser_power=laser_power,
+                    laser_power_unit=laser_power_unit,
+                    condition_name=condition_name,
+                    condition_value=condition_value,
+                ),
             )
-            st.session_state["fit_result"] = autofit(
+            result = autofit(
                 spectrum,
                 config=config,
                 progress=report_progress,
             )
+            st.session_state["fit_result"] = result
+            history = st.session_state.setdefault("fit_history", [])
+            history.append(result)
+            st.session_state["fit_history"] = history[-12:]
         except (AnalysisError, TypeError, ValueError) as error:
             st.session_state.pop("fit_result", None)
             fit_status.update(label="Analysis failed", state="error", expanded=True)
@@ -302,6 +392,11 @@ def main() -> None:
     result = st.session_state.get("fit_result")
     if isinstance(result, FitResult):
         _render_result(result)
+    history = tuple(
+        item for item in st.session_state.get("fit_history", ()) if isinstance(item, FitResult)
+    )
+    if len(history) >= 2:
+        _render_related(history)
 
 
 def _render_result(result: FitResult) -> None:
@@ -358,6 +453,82 @@ def _render_result(result: FitResult) -> None:
         render_fit_png(result),
         file_name="sifter.fit.png",
         mime="image/png",
+    )
+
+
+def _render_related(history: tuple[FitResult, ...]) -> None:
+    st.markdown("### 06 · Related spectra")
+    choices = _related_condition_choices(history)
+    if not choices:
+        st.caption("Record temperature, laser power, or a generic condition to compare spectra.")
+        return
+    condition = st.selectbox(
+        "Condition axis",
+        choices,
+        key="related_condition_axis",
+    )
+    table = summarize_related_spectra(history, condition=condition)
+    st.dataframe(table, width="stretch", hide_index=True)
+    if table.empty or table["condition_value"].isna().all():
+        st.caption("No numeric condition values are available for plotting.")
+        return
+    numeric = table.copy()
+    numeric["condition_value"] = pd.to_numeric(numeric["condition_value"], errors="coerce")
+    numeric = numeric.dropna(subset=["condition_value"])
+    if numeric.empty:
+        st.caption("The selected condition is nonnumeric, so only the table is shown.")
+        return
+    for value in ("center", "fwhm", "area"):
+        st.line_chart(
+            numeric,
+            x="condition_value",
+            y=value,
+            color="track_id",
+            x_label=condition.replace("_", " ").title(),
+            y_label=value.upper() if value == "fwhm" else value.title(),
+        )
+
+
+def _related_condition_choices(history: tuple[FitResult, ...]) -> tuple[str, ...]:
+    choices: list[str] = []
+    for result in history:
+        context = result.measurement_context
+        if context is None:
+            continue
+        if context.temperature is not None and "temperature" not in choices:
+            choices.append("temperature")
+        if context.laser_power is not None and "laser_power" not in choices:
+            choices.append("laser_power")
+        if context.conditions is not None:
+            for key in context.conditions:
+                if key not in choices:
+                    choices.append(key)
+    return tuple(choices)
+
+
+def _measurement_context(
+    *,
+    temperature_enabled: bool,
+    temperature_value: float,
+    temperature_unit: str,
+    laser_enabled: bool,
+    laser_power: float,
+    laser_power_unit: str,
+    condition_name: str,
+    condition_value: str,
+) -> MeasurementContext | None:
+    conditions = {}
+    clean_name = condition_name.strip()
+    if clean_name:
+        conditions[clean_name] = condition_value.strip()
+    if not temperature_enabled and not laser_enabled and not conditions:
+        return None
+    return MeasurementContext(
+        temperature=temperature_value if temperature_enabled else None,
+        temperature_unit=temperature_unit if temperature_enabled else None,
+        laser_power=laser_power if laser_enabled else None,
+        laser_power_unit=laser_power_unit if laser_enabled else None,
+        conditions=conditions,
     )
 
 
