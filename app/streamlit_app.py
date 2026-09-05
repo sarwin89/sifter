@@ -417,7 +417,11 @@ def _render_result(result: FitResult) -> None:
         st.warning(f"{warning.code}: {warning.message}")
 
     for name, figure in result.plot().items():
+        if name == "fourier" and result.fourier is not None and result.fourier.frequency.size == 0:
+            continue
         st.plotly_chart(figure, width="stretch", key=f"result_{name}")
+
+    _render_result_fourier(result)
 
     st.subheader("Candidate comparison")
     rows = [
@@ -454,6 +458,63 @@ def _render_result(result: FitResult) -> None:
         file_name="sifter.fit.png",
         mime="image/png",
     )
+
+
+def _render_result_fourier(result: FitResult) -> None:
+    st.subheader("Fourier diagnostics")
+    if result.fourier is None:
+        st.caption("Fourier diagnostics were disabled for this analysis.")
+        return
+
+    fourier = result.fourier
+    if fourier.frequency.size == 0:
+        st.warning(
+            "Fourier diagnostics unavailable: "
+            f"{fourier.warning_code or 'INSUFFICIENT_FOURIER_RANGE'}"
+        )
+        st.caption(
+            "For nonuniform coordinate grids, enable diagnostic-only interpolation "
+            "in Advanced settings if an FFT preview is acceptable. Fits and model "
+            "scores still use the original observations."
+        )
+        return
+
+    status = "available" if fourier.applicable else "limited"
+    interpolation = "interpolated grid" if fourier.interpolated else "native uniform grid"
+    st.caption(
+        f"Fourier diagnostics {status} · {fourier.window.title()} window · {interpolation}"
+    )
+    if fourier.warning_code is not None:
+        st.warning(f"{fourier.warning_code}: Fourier diagnostics are reported with caution.")
+
+    if fourier.candidate_spacings:
+        st.table(
+            {
+                "Candidate spacings": ", ".join(
+                    f"{spacing:.4g}" for spacing in fourier.candidate_spacings
+                )
+            },
+            border="horizontal",
+            width="content",
+        )
+
+    if fourier.envelope_fits:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Family": fit.family.title(),
+                        "BIC": fit.bic,
+                        "RSS": fit.rss,
+                        "Frequency min": fit.frequency_min,
+                        "Frequency max": fit.frequency_max,
+                    }
+                    for fit in fourier.envelope_fits
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+        )
 
 
 def _render_related(history: tuple[FitResult, ...]) -> None:
