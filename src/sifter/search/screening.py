@@ -16,6 +16,7 @@ from sifter.selection import unweighted_information_criteria
 from sifter.spectrum import Spectrum
 
 ScreeningStatus = Literal["converged", "budget_exhausted", "failed"]
+FINALIST_SCREENING_BIC_WINDOW = 200.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +80,14 @@ def retain_diverse_finalists(
     )
     if not eligible or limit < 1:
         return ()
+    best_screening_bic = eligible[0].screening_bic
+    assert best_screening_bic is not None
+    eligible = [
+        record
+        for record in eligible
+        if record.screening_bic is not None
+        and record.screening_bic <= best_screening_bic + FINALIST_SCREENING_BIC_WINDOW
+    ]
 
     selected = [eligible[0]]
     remaining = eligible[1:]

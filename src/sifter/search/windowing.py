@@ -11,6 +11,7 @@ from sifter.detection import PeakProposal, detect_peak_proposals
 from sifter.execution import CandidateFitTask, build_fit_tasks, execute_fit_tasks
 from sifter.fitting import CandidateFailure, CandidateFit
 from sifter.models import ModelSpec, ParameterLayout, PeakStart, build_candidates_for_counts
+from sifter.models.bounds import center_bounds, width_upper_bounds
 from sifter.models.specification import evaluate_model
 from sifter.search.policy import SearchPolicy
 from sifter.search.preprocessing import SearchPreprocessing
@@ -365,13 +366,14 @@ def _global_specs(
     if not starts or len(starts) > config.max_peaks:
         return ()
     return tuple(
-        _global_spec(spectrum, shape, baseline_order, starts)
+        _global_spec(spectrum, config, shape, baseline_order, starts)
         for baseline_order in config.baseline_orders
     )
 
 
 def _global_spec(
     spectrum: Spectrum,
+    config: AutofitConfig,
     shape: PeakShape,
     baseline_order: int,
     starts: tuple[PeakStart, ...],
@@ -381,19 +383,40 @@ def _global_spec(
     positive_signal = np.maximum(spectrum.intensity - np.quantile(spectrum.intensity, 0.05), 0.0)
     total_area = float(np.trapezoid(positive_signal, spectrum.x))
     area_upper = max(total_area * 10.0, span * float(np.ptp(spectrum.intensity)) * 10.0, 1.0)
-    bounded_starts = tuple(_bounded_start(shape, peak, minimum_width) for peak in starts)
+    centers = tuple(peak.center for peak in starts)
+    center_limits = center_bounds(
+        centers,
+        lower_limit=float(spectrum.x[0]),
+        upper_limit=float(spectrum.x[-1]),
+        allow_broad_multimax_component=config.allow_broad_multimax_component,
+    )
+    width_bounds = width_upper_bounds(
+        shape,
+        centers,
+        span=span,
+        minimum_width=minimum_width,
+        allow_broad_multimax_component=config.allow_broad_multimax_component,
+    )
+    bounded_starts = tuple(
+        _bounded_start(shape, peak, minimum_width, sigma_upper, gamma_upper)
+        for peak, (sigma_upper, gamma_upper) in zip(starts, width_bounds, strict=True)
+    )
     coefficient_bound = max(float(np.max(np.abs(spectrum.intensity))) * 100.0, 1.0)
     lower = [-coefficient_bound] * (baseline_order + 1)
     upper = [coefficient_bound] * (baseline_order + 1)
-    for _ in bounded_starts:
-        lower.extend((0.0, float(spectrum.x[0])))
-        upper.extend((area_upper, float(spectrum.x[-1])))
+    for (center_lower, center_upper), (sigma_upper, gamma_upper) in zip(
+        center_limits,
+        width_bounds,
+        strict=True,
+    ):
+        lower.extend((0.0, center_lower))
+        upper.extend((area_upper, center_upper))
         if shape in {"gaussian", "voigt"}:
             lower.append(minimum_width)
-            upper.append(span)
+            upper.append(sigma_upper or span)
         if shape in {"lorentzian", "voigt"}:
             lower.append(minimum_width)
-            upper.append(span)
+            upper.append(gamma_upper or span)
     return ModelSpec(
         shape=shape,
         peak_count=len(bounded_starts),
@@ -405,24 +428,30 @@ def _global_spec(
     )
 
 
-def _bounded_start(shape: PeakShape, peak: PeakStart, minimum_width: float) -> PeakStart:
+def _bounded_start(
+    shape: PeakShape,
+    peak: PeakStart,
+    minimum_width: float,
+    sigma_upper: float | None,
+    gamma_upper: float | None,
+) -> PeakStart:
     if shape == "gaussian":
         return PeakStart(
             area=max(peak.area, np.finfo(float).eps),
             center=peak.center,
-            sigma=max(peak.sigma or minimum_width, minimum_width),
+            sigma=min(max(peak.sigma or minimum_width, minimum_width), sigma_upper or np.inf),
         )
     if shape == "lorentzian":
         return PeakStart(
             area=max(peak.area, np.finfo(float).eps),
             center=peak.center,
-            gamma=max(peak.gamma or minimum_width, minimum_width),
+            gamma=min(max(peak.gamma or minimum_width, minimum_width), gamma_upper or np.inf),
         )
     return PeakStart(
         area=max(peak.area, np.finfo(float).eps),
         center=peak.center,
-        sigma=max(peak.sigma or minimum_width, minimum_width),
-        gamma=max(peak.gamma or minimum_width, minimum_width),
+        sigma=min(max(peak.sigma or minimum_width, minimum_width), sigma_upper or np.inf),
+        gamma=min(max(peak.gamma or minimum_width, minimum_width), gamma_upper or np.inf),
     )
 
 

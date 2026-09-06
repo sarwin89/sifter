@@ -76,6 +76,45 @@ def test_finalist_retention_covers_model_dimensions_before_filling_by_score() ->
     assert {record.spec.baseline_order for record in finalists} == {0, 1}
 
 
+def test_finalist_retention_prunes_decisively_worse_screening_rows() -> None:
+    spectrum = easy_one_peak_spectrum()
+    config = AutofitConfig(
+        max_peaks=3,
+        shapes=("gaussian",),
+        baseline_orders=(0,),
+        fourier=False,
+    )
+    specs = build_candidates_for_counts(
+        spectrum,
+        (),
+        None,
+        config,
+        peak_counts=(1, 2, 3),
+    )
+    records = tuple(
+        ScreeningRecord(
+            spec=spec,
+            status="converged",
+            screening_bic=bic,
+            parameters=ParameterLayout(
+                spec.shape,
+                spec.peak_count,
+                spec.baseline_order,
+            ).initial_vector(spec),
+            attempted_starts=1,
+            converged_starts=1,
+            total_evaluations=3,
+            elapsed_seconds=0.01,
+            failure_code=None,
+        )
+        for spec, bic in zip(specs, (100.0, 500.0, 120.0), strict=True)
+    )
+
+    finalists = retain_diverse_finalists(records, limit=3)
+
+    assert [record.screening_bic for record in finalists] == [100.0, 120.0]
+
+
 def test_failed_screening_rows_are_never_selected_as_finalists() -> None:
     spectrum = easy_one_peak_spectrum()
     spec = build_candidates(

@@ -183,6 +183,7 @@ def autofit(
             )
             screening = (*screening, *windowed_screening)
         reference_candidates = build_reference_candidates(spectrum, settings)
+        reference_screening: tuple[ScreeningRecord, ...] = ()
         if reference_candidates:
             emit_progress(
                 progress,
@@ -206,6 +207,17 @@ def autofit(
             screening = (*screening, *reference_screening)
         screening = _deduplicated_screening(screening)
         finalists = retain_diverse_finalists(screening, limit=policy.finalist_limit)
+        if reference_screening:
+            finalists = _deduplicated_screening(
+                (
+                    *finalists,
+                    *(
+                        record
+                        for record in reference_screening
+                        if record.screening_bic is not None and record.parameters is not None
+                    ),
+                )
+            )
         fit_results = list(screening_failures(screening))
         emit_progress(
             progress,

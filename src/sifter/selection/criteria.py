@@ -6,7 +6,7 @@ from typing import Literal
 import numpy as np
 
 from sifter.config import PeakShape
-from sifter.detection import detect_peak_proposals
+from sifter.detection import PeakProposal, detect_peak_proposals
 from sifter.fitting import CandidateFailure, CandidateFit
 from sifter.lineshapes import gaussian_fwhm, lorentzian_fwhm, voigt_fwhm
 from sifter.models import ModelSpec, PeakStart
@@ -228,6 +228,7 @@ def _component_multimax_violation(result: CandidateFit, spectrum: Spectrum) -> s
         proposal_spectrum,
         max_peaks=min(max(2, result.spec.peak_count * 3), 20),
     )
+    proposals = _merge_unresolved_proposals(proposals, spectrum.grid.median_step)
     if len(proposals) < 2:
         return None
     for peak in result.peaks:
@@ -239,6 +240,45 @@ def _component_multimax_violation(result: CandidateFit, spectrum: Spectrum) -> s
         if maxima_in_component > 1:
             return "COMPONENT_SPANS_MULTIPLE_MAXIMA"
     return None
+
+
+def _merge_unresolved_proposals(
+    proposals: tuple[PeakProposal, ...],
+    median_step: float,
+) -> tuple[PeakProposal, ...]:
+    if len(proposals) < 2:
+        return proposals
+    ordered = sorted(proposals, key=lambda proposal: proposal.center)
+    clusters: list[list[PeakProposal]] = [[ordered[0]]]
+    for proposal in ordered[1:]:
+        previous = clusters[-1][-1]
+        resolution = max(previous.width, proposal.width, 20.0 * median_step)
+        if proposal.center - previous.center <= resolution:
+            clusters[-1].append(proposal)
+        else:
+            clusters.append([proposal])
+    merged: list[PeakProposal] = []
+    for cluster in clusters:
+        prominence = np.asarray([proposal.prominence for proposal in cluster], dtype=np.float64)
+        total_prominence = float(np.sum(prominence))
+        if total_prominence > 0.0:
+            center = float(
+                np.average(
+                    [proposal.center for proposal in cluster],
+                    weights=prominence,
+                )
+            )
+        else:
+            center = float(np.mean([proposal.center for proposal in cluster]))
+        merged.append(
+            PeakProposal(
+                center=center,
+                width=max(proposal.width for proposal in cluster),
+                prominence=max(proposal.prominence for proposal in cluster),
+                sources=frozenset().union(*(proposal.sources for proposal in cluster)),
+            )
+        )
+    return tuple(merged)
 
 
 def _peak_fwhm(shape: str, peak: PeakStart) -> float:

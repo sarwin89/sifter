@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from sifter import AutofitConfig, Spectrum
+from sifter.detection import PeakProposal
 from sifter.fitting import CandidateFailure, CandidateFit
 from sifter.models import ModelSpec, ParameterLayout, PeakStart, build_candidates
 from sifter.selection import (
@@ -11,6 +12,7 @@ from sifter.selection import (
     score_candidate,
     unweighted_information_criteria,
 )
+from sifter.selection.criteria import _merge_unresolved_proposals
 from sifter.synthetic import SyntheticPeak, make_spectrum
 from tests.helpers import easy_one_peak_spectrum, one_gaussian_spec
 
@@ -127,6 +129,22 @@ def test_broad_multimax_override_records_warning_and_keeps_candidate_rankable() 
     assert row.status == "valid"
     assert row.bic is not None
     assert "BROAD_MULTIMAX_COMPONENT_ALLOWED" in row.warnings
+
+
+def test_unresolved_detector_duplicates_count_as_one_maximum() -> None:
+    proposals = (
+        PeakProposal(1.616151, 0.0010, 120.0, frozenset({"prominence"})),
+        PeakProposal(1.618624, 0.0012, 115.0, frozenset({"derivative"})),
+        PeakProposal(1.655778, 0.0098, 224.0, frozenset({"prominence"})),
+    )
+
+    merged = _merge_unresolved_proposals(proposals, median_step=0.000164)
+
+    assert len(merged) == 2
+    assert merged[0].center == pytest.approx(
+        (1.616151 * 120.0 + 1.618624 * 115.0) / (120.0 + 115.0)
+    )
+    assert merged[1].center == pytest.approx(1.655778)
 
 
 def _candidate_fit(spectrum: Spectrum, *, peak_count: int, residual_value: float) -> CandidateFit:

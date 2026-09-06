@@ -3,6 +3,7 @@ import pytest
 
 from sifter import AutofitConfig, Spectrum
 from sifter.detection import PeakProposal
+from sifter.lineshapes import voigt_fwhm
 from sifter.models import ParameterLayout, build_candidates, build_candidates_for_counts
 
 
@@ -55,6 +56,42 @@ def test_builder_uses_grid_and_span_for_positive_width_bounds() -> None:
     assert upper["peak.0.sigma"] <= spectrum.x[-1] - spectrum.x[0]
     assert upper["peak.0.gamma"] <= spectrum.x[-1] - spectrum.x[0]
     assert len(spec.lower_bounds) == len(spec.upper_bounds) == layout.parameter_count
+
+
+def test_voigt_width_bounds_do_not_span_neighboring_resolved_maxima() -> None:
+    spectrum = _example_spectrum()
+    proposals = (
+        PeakProposal(4.00, 0.10, 10.0, frozenset({"prominence"})),
+        PeakProposal(4.20, 0.10, 9.0, frozenset({"prominence"})),
+        PeakProposal(4.45, 0.10, 8.0, frozenset({"prominence"})),
+    )
+    config = AutofitConfig(max_peaks=3, shapes=("voigt",), baseline_orders=(0,))
+
+    spec = build_candidates_for_counts(
+        spectrum,
+        proposals,
+        None,
+        config,
+        peak_counts=(3,),
+    )[0]
+    layout = ParameterLayout(spec.shape, spec.peak_count, spec.baseline_order)
+    lower = dict(zip(layout.names, spec.lower_bounds, strict=True))
+    upper = dict(zip(layout.names, spec.upper_bounds, strict=True))
+
+    for index, peak in enumerate(spec.starts):
+        nearest_neighbor = min(
+            abs(peak.center - other.center)
+            for other in spec.starts
+            if other.center != peak.center
+        )
+        maximum_fwhm = voigt_fwhm(
+            sigma=upper[f"peak.{index}.sigma"],
+            gamma=upper[f"peak.{index}.gamma"],
+        )
+
+        assert lower[f"peak.{index}.center"] > spectrum.x[0]
+        assert upper[f"peak.{index}.center"] < spectrum.x[-1]
+        assert maximum_fwhm / 2.0 < nearest_neighbor
 
 
 def test_no_proposals_still_builds_one_peak_fallback() -> None:
