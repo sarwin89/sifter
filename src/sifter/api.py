@@ -5,7 +5,7 @@ from importlib.metadata import version
 
 import numpy as np
 
-from sifter.config import AutofitConfig, PeakShape, SearchMode
+from sifter.config import AutofitConfig, PeakCountMode, PeakShape, SearchMode
 from sifter.diagnostics import diagnose_fit, residual_diagnostics
 from sifter.execution import build_fit_tasks, execute_fit_tasks
 from sifter.fitting import (
@@ -28,6 +28,8 @@ from sifter.result import (
 )
 from sifter.search import (
     ScreeningRecord,
+    SearchPolicy,
+    SearchPreprocessing,
     adaptive_screening,
     initial_peak_counts,
     preprocess_spectrum,
@@ -74,6 +76,7 @@ def autofit(
     fourier: bool | None = None,
     random_seed: int | None = None,
     search_mode: SearchMode | None = None,
+    peak_count_mode: PeakCountMode | None = None,
     workers: int | None = None,
     progress: ProgressCallback | None = None,
 ) -> FitResult:
@@ -85,16 +88,13 @@ def autofit(
         fourier=fourier,
         random_seed=random_seed,
         search_mode=search_mode,
+        peak_count_mode=peak_count_mode,
         workers=workers,
     )
     emit_progress(progress, "preprocessing", 0, 1)
     preprocessing = preprocess_spectrum(spectrum, settings)
     policy = search_policy(settings.search_mode)
-    peak_counts = initial_peak_counts(
-        preprocessing.detection,
-        policy,
-        max_peaks=settings.max_peaks,
-    )
+    peak_counts = _planned_peak_counts(preprocessing, policy, settings)
     emit_progress(
         progress,
         "preprocessing",
@@ -102,7 +102,8 @@ def autofit(
         1,
         message=(
             f"{len(preprocessing.proposals)} real-space proposals; "
-            f"candidate peak counts {', '.join(str(count) for count in peak_counts)}"
+            f"candidate peak counts {', '.join(str(count) for count in peak_counts)}; "
+            f"{settings.peak_count_mode} peak-count mode"
         ),
     )
     if policy.exhaustive:
@@ -114,7 +115,13 @@ def autofit(
             peak_counts=peak_counts,
         )
         candidates = _deduplicated_candidates(
-            (*candidates, *build_reference_candidates(spectrum, settings))
+            (
+                *candidates,
+                *_count_filtered_candidates(
+                    build_reference_candidates(spectrum, settings),
+                    settings,
+                ),
+            )
         )
         tasks = build_fit_tasks(
             spectrum,
@@ -182,7 +189,10 @@ def autofit(
                 ),
             )
             screening = (*screening, *windowed_screening)
-        reference_candidates = build_reference_candidates(spectrum, settings)
+        reference_candidates = _count_filtered_candidates(
+            build_reference_candidates(spectrum, settings),
+            settings,
+        )
         reference_screening: tuple[ScreeningRecord, ...] = ()
         if reference_candidates:
             emit_progress(
@@ -264,7 +274,12 @@ def autofit(
         None,
     )
     if best_score is None:
-        raise AnalysisError("NO_RANKABLE_CANDIDATE", failures, ranked)
+        code = (
+            "NO_RANKABLE_EXACT_CANDIDATE"
+            if settings.peak_count_mode == "exact"
+            else "NO_RANKABLE_CANDIDATE"
+        )
+        raise AnalysisError(code, failures, ranked)
     best_fit = successful[best_score.spec]
     diagnostics = residual_diagnostics(best_fit.residuals)
     fit_warnings = list(diagnose_fit(best_fit, spectrum))
@@ -320,11 +335,13 @@ def autofit(
         parameter_count=best_score.parameter_count,
         observation_count=spectrum.x.size,
         reduced_chi_squared=best_score.reduced_chi_squared,
+        component_diagnostics=best_score.component_diagnostics,
     )
     result = FitResult(
         schema_version="sifter.fit_result.v2",
         settings=AnalysisSettings(
             max_peaks=settings.max_peaks,
+            peak_count_mode=settings.peak_count_mode,
             shapes=settings.shapes,
             baseline_orders=settings.baseline_orders,
             fourier=settings.fourier,
@@ -368,6 +385,7 @@ def _resolved_config(
     fourier: bool | None,
     random_seed: int | None,
     search_mode: SearchMode | None,
+    peak_count_mode: PeakCountMode | None,
     workers: int | None,
 ) -> AutofitConfig:
     resolved = AutofitConfig() if config is None else config
@@ -381,9 +399,36 @@ def _resolved_config(
         resolved = replace(resolved, random_seed=random_seed)
     if search_mode is not None:
         resolved = replace(resolved, search_mode=search_mode)
+    if peak_count_mode is not None:
+        resolved = replace(resolved, peak_count_mode=peak_count_mode)
     if workers is not None:
         resolved = replace(resolved, workers=workers)
     return resolved
+
+
+def _planned_peak_counts(
+    preprocessing: SearchPreprocessing,
+    policy: SearchPolicy,
+    settings: AutofitConfig,
+) -> tuple[int, ...]:
+    if settings.peak_count_mode == "exact":
+        return (settings.max_peaks,)
+    return initial_peak_counts(
+        preprocessing.detection,
+        policy,
+        max_peaks=settings.max_peaks,
+    )
+
+
+def _count_filtered_candidates(
+    candidates: tuple[ModelSpec, ...],
+    settings: AutofitConfig,
+) -> tuple[ModelSpec, ...]:
+    if settings.peak_count_mode != "exact":
+        return candidates
+    return tuple(
+        candidate for candidate in candidates if candidate.peak_count == settings.max_peaks
+    )
 
 
 def _analysis_warnings(

@@ -44,6 +44,10 @@ SEARCH_MODE_LABELS = {
     "Thorough": "thorough",
     "Exhaustive": "exhaustive",
 }
+PEAK_COUNT_MODE_LABELS = {
+    "Auto up to maximum": "auto",
+    "Force exact number": "exact",
+}
 PHASE_LABELS = {
     "preprocessing": "Preparing spectrum",
     "screening": "Screening candidate models",
@@ -151,7 +155,7 @@ def main() -> None:
 
     st.markdown("### 03 · Configure analysis")
     with st.form("analysis_settings"):
-        controls = st.columns((1, 1, 2, 1))
+        controls = st.columns((1, 1, 1, 2, 1))
         with controls[0]:
             max_peaks = int(
                 st.number_input(
@@ -164,6 +168,16 @@ def main() -> None:
                 )
             )
         with controls[1]:
+            peak_count_mode_label = st.selectbox(
+                "Peak count mode",
+                tuple(PEAK_COUNT_MODE_LABELS),
+                key="peak_count_mode",
+                help=(
+                    "Auto lets BIC/AICc choose any count up to the limit. "
+                    "Exact fits only the selected count."
+                ),
+            )
+        with controls[2]:
             search_mode_label = st.selectbox(
                 "Search mode",
                 tuple(SEARCH_MODE_LABELS),
@@ -171,14 +185,14 @@ def main() -> None:
                 key="search_mode",
                 help="Standard screens a detector-centered search; Exhaustive fits every count.",
             )
-        with controls[2]:
+        with controls[3]:
             selected_shapes = st.multiselect(
                 "Peak shapes",
                 tuple(SHAPE_LABELS),
                 default=tuple(SHAPE_LABELS),
                 key="shapes",
             )
-        with controls[3]:
+        with controls[4]:
             fourier_enabled = st.checkbox(
                 "Fourier assistance",
                 value=True,
@@ -241,12 +255,13 @@ def main() -> None:
                 )
             )
             allow_broad_multimax_component = st.checkbox(
-                "Allow known broad band across resolved maxima",
+                "Record known shoulder or two-maxima broad band",
                 value=False,
                 key="allow_broad_multimax_component",
                 help=(
-                    "Records an explicit override and allows otherwise "
-                    "structural-violation candidates."
+                    "Records an explicit interpretation when a component spans "
+                    "two resolved maxima. Components spanning more than two "
+                    "maxima remain inadmissible."
                 ),
             )
             st.markdown("Measurement context")
@@ -304,7 +319,15 @@ def main() -> None:
                     key="condition_value",
                 )
         estimated_candidates = max_peaks * len(selected_shapes) * len(selected_baselines)
-        st.caption(f"Search ceiling: {estimated_candidates} candidate fits · seed {random_seed}")
+        mode_text = (
+            f"exactly {max_peaks} peak(s)"
+            if PEAK_COUNT_MODE_LABELS[peak_count_mode_label] == "exact"
+            else f"up to {max_peaks} peak(s)"
+        )
+        st.caption(
+            f"Search target: {mode_text} · ceiling estimate {estimated_candidates} "
+            f"candidate fits · seed {random_seed}"
+        )
         if uncertainty_mode == "bootstrap":
             st.warning(
                 f"Thorough uncertainty adds {bootstrap_samples} refits after model selection."
@@ -330,6 +353,7 @@ def main() -> None:
             spectrum,
             config=AutofitConfig(
                 max_peaks=max_peaks,
+                peak_count_mode=PEAK_COUNT_MODE_LABELS[peak_count_mode_label],
                 fourier=fourier_enabled,
                 interpolate_nonuniform_fft=allow_fft_interpolation,
             ),
@@ -350,10 +374,13 @@ def main() -> None:
                 label=label,
                 state="complete" if event.phase == "completion" else "running",
             )
+            with fit_status:
+                st.write(label)
 
         try:
             config = AutofitConfig(
                 max_peaks=max_peaks,
+                peak_count_mode=PEAK_COUNT_MODE_LABELS[peak_count_mode_label],
                 search_mode=SEARCH_MODE_LABELS[search_mode_label],
                 shapes=tuple(SHAPE_LABELS[label] for label in selected_shapes),
                 baseline_orders=tuple(selected_baselines),
@@ -406,11 +433,12 @@ def _render_result(result: FitResult) -> None:
         f"Recommended model · {model.peak_count} {model.shape.title()} "
         f"{'peak' if model.peak_count == 1 else 'peaks'}"
     )
-    metrics = st.columns(4)
+    metrics = st.columns(5)
     metrics[0].metric("BIC", f"{model.bic:.2f}")
     metrics[1].metric("AICc", f"{model.aicc:.2f}")
     metrics[2].metric("RMSE", f"{model.rmse:.4g}")
-    metrics[3].metric("Seed", str(result.settings.random_seed))
+    metrics[3].metric("Peak mode", result.settings.peak_count_mode)
+    metrics[4].metric("Seed", str(result.settings.random_seed))
     method = "Covariance" if result.uncertainty.method == "covariance" else "Bootstrap"
     st.caption(f"{method} uncertainty · deterministic seed {result.settings.random_seed}")
     for warning in result.warnings:
@@ -423,7 +451,10 @@ def _render_result(result: FitResult) -> None:
 
     _render_result_fourier(result)
 
-    st.subheader("Candidate comparison")
+    st.subheader("Components")
+    st.dataframe(result.to_dataframe(), width="stretch", hide_index=True)
+
+    st.subheader("Candidate models")
     rows = [
         {
             "Shape": score.shape.title(),
@@ -433,6 +464,7 @@ def _render_result(result: FitResult) -> None:
             "BIC": score.bic,
             "ΔBIC": score.delta_bic,
             "AICc": score.aicc,
+            "Warnings": ", ".join(score.warnings),
             "Failure": score.failure_code,
         }
         for score in result.candidates
@@ -714,7 +746,10 @@ def _progress_label(event: ProgressEvent) -> str:
 
 
 def _analysis_error_message(error: Exception) -> str:
-    if isinstance(error, AnalysisError) and error.code == "NO_RANKABLE_CANDIDATE":
+    if isinstance(error, AnalysisError) and error.code in {
+        "NO_RANKABLE_CANDIDATE",
+        "NO_RANKABLE_EXACT_CANDIDATE",
+    }:
         rejection_counts = (
             pd.Series(
                 [
@@ -728,11 +763,18 @@ def _analysis_error_message(error: Exception) -> str:
         common = ", ".join(
             f"{code}: {count}" for code, count in rejection_counts.items()
         )
-        advice = (
-            "No candidate remained rankable after validation. "
-            "If this is a known broad physical band, enable the advanced broad-band "
-            "override; otherwise increase the peak limit or narrow the fitted range."
-        )
+        if error.code == "NO_RANKABLE_EXACT_CANDIDATE":
+            advice = (
+                "No candidate at the forced peak count remained rankable after "
+                "validation. Increase the exact count, switch back to auto mode, "
+                "or narrow the fitted range."
+            )
+        else:
+            advice = (
+                "No candidate remained rankable after validation. Increase the "
+                "peak limit, switch to exact mode for known spectra, or narrow "
+                "the fitted range."
+            )
         return f"{advice} Rejections: {common or 'none'}."
     return str(error)
 

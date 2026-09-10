@@ -87,6 +87,26 @@ def test_config_selects_covariance_or_bootstrap_uncertainty() -> None:
     assert bootstrap.uncertainty.successful_bootstraps == 100
 
 
+def test_exact_peak_count_mode_returns_only_requested_count() -> None:
+    spectrum, _ = easy_two_peak_spectrum(seed=16)
+
+    result = autofit(
+        spectrum,
+        config=AutofitConfig(
+            max_peaks=1,
+            peak_count_mode="exact",
+            shapes=("gaussian",),
+            baseline_orders=(0,),
+            fourier=False,
+            random_seed=77,
+        ),
+    )
+
+    assert result.settings.peak_count_mode == "exact"
+    assert result.best_model.peak_count == 1
+    assert {score.peak_count for score in result.candidates} == {1}
+
+
 def test_measurement_context_alone_does_not_change_single_spectrum_fit() -> None:
     spectrum = easy_one_peak_spectrum(seed=15)
     common = dict(

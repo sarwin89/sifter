@@ -8,6 +8,7 @@ def test_autofit_config_has_conservative_defaults() -> None:
 
     assert config.max_peaks == 10
     assert config.search_mode == "standard"
+    assert config.peak_count_mode == "auto"
     assert config.shapes == ("gaussian", "lorentzian", "voigt")
     assert config.baseline_orders == (0, 1, 2)
     assert config.fourier
@@ -24,6 +25,7 @@ def test_autofit_config_has_conservative_defaults() -> None:
     [
         ({"max_peaks": 0}, "max_peaks"),
         ({"search_mode": "turbo"}, "search_mode"),
+        ({"peak_count_mode": "range"}, "peak_count_mode"),
         ({"shapes": ()}, "shape"),
         ({"shapes": ("gaussian", "gaussian")}, "unique"),
         ({"shapes": ("pseudo_voigt",)}, "unsupported"),

@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from sifter import AutofitConfig
+from sifter.baseline import fit_polynomial_baseline
 from sifter.search import preprocess_spectrum
 from tests.helpers import easy_two_peak_spectrum
 
@@ -41,3 +42,19 @@ def test_preprocessing_returns_requested_fourier_diagnostics() -> None:
 
     assert result.fourier is not None
     assert result.fourier.window == "hann"
+
+
+def test_flat_baseline_preprocessing_uses_flat_polynomial_context() -> None:
+    spectrum, _ = easy_two_peak_spectrum(seed=12)
+    config = AutofitConfig(
+        max_peaks=4,
+        shapes=("gaussian",),
+        baseline_orders=(0,),
+        fourier=False,
+    )
+
+    result = preprocess_spectrum(spectrum, config)
+    flat = fit_polynomial_baseline(spectrum, order=0).evaluate(spectrum.x)
+
+    np.testing.assert_allclose(result.baseline, flat)
+    np.testing.assert_allclose(result.adjusted, spectrum.intensity - flat)

@@ -2,11 +2,11 @@
 
 **Spectral Inference using Fourier Transforms for Energy Resolution**
 
-SIFTER is a local-first scientific Python project for reproducible decomposition of one-dimensional spectra. Version 0.2 fits Gaussian, Lorentzian, and Voigt peak models in the original data domain while using Fourier-domain information only as an auxiliary diagnostic and initializer.
+SIFTER is a local-first scientific Python project for reproducible decomposition of one-dimensional spectra. Version 0.3 fits Gaussian, Lorentzian, and Voigt peak models in the original data domain while using Fourier-domain information only as an auxiliary diagnostic and initializer.
 
 Fourier evidence initializes and diagnoses fits; only the original observations determine parameters and model scores. SIFTER reports uncertainty and identifiability limitations rather than claiming resolution the data cannot support.
 
-Version 0.2 adds robust delimited text import controls, bounded staged search to at least ten peaks, process-parallel candidate fitting, live GUI progress, pre-fit real/Fourier previews, windowed progressive initialization with full-spectrum refinement, a default guard against one broad component spanning multiple resolved maxima, optional measurement context, reference-seeded candidates, and related-spectrum session plots.
+Version 0.3 adds explicit auto-vs-exact peak-count fitting, overlap-aware broadness diagnostics, flat-baseline-consistent proposal detection, more visible Fourier status/results, and component ownership exports. Peaks may overlap, but a single component spanning more than two resolved maxima is inadmissible.
 
 ## Install
 
@@ -22,7 +22,7 @@ SIFTER supports Python 3.11 through 3.13. Install the development environment wi
 python -m pip install -e ".[dev,gui]"
 ```
 
-The v0.2 implementation follows the reviewed tasks in [docs/superpowers/plans/2026-09-04-sifter-v0.2.md](docs/superpowers/plans/2026-09-04-sifter-v0.2.md).
+The v0.3 implementation extends the reviewed v0.2 plan in [docs/superpowers/plans/2026-09-04-sifter-v0.2.md](docs/superpowers/plans/2026-09-04-sifter-v0.2.md).
 
 ## Local GUI
 
@@ -45,6 +45,7 @@ result = autofit(
     spectrum,
     config=AutofitConfig(
         max_peaks=10,
+        peak_count_mode="auto",  # or "exact" to force exactly max_peaks
         shapes=("gaussian", "lorentzian", "voigt"),
         fourier=True,
         random_seed=42,

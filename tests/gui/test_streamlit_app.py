@@ -28,6 +28,7 @@ def test_upload_exposes_confirmable_defaults_but_waits_for_analyze() -> None:
     assert app.selectbox(key="intensity_column").value == "intensity"
     assert app.number_input(key="max_peaks").value == 10
     assert app.number_input(key="max_peaks").max == 10
+    assert app.selectbox(key="peak_count_mode").value == "Auto up to maximum"
     assert app.selectbox(key="search_mode").value == "Standard"
     assert app.multiselect(key="shapes").value == ["Gaussian", "Lorentzian", "Voigt"]
     assert app.checkbox(key="fourier_enabled").value is True
@@ -68,7 +69,7 @@ def test_synthetic_upload_reaches_results_view_and_exports() -> None:
     assert any("Recommended model" in item.value for item in app.subheader)
     assert len(app.get("plotly_chart")) >= 2
     assert len(app.download_button) == 3
-    assert any("Candidate comparison" in item.value for item in app.subheader)
+    assert any("Candidate models" in item.value for item in app.subheader)
     assert any("Covariance" in item.value for item in app.caption)
     assert app.get("progress")[-1].value == 100
 

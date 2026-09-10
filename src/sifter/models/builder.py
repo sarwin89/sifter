@@ -18,6 +18,14 @@ def build_candidates(
     config: AutofitConfig,
 ) -> tuple[ModelSpec, ...]:
     """Build every eligible simpler count, family, and baseline candidate."""
+    if config.peak_count_mode == "exact":
+        return build_candidates_for_counts(
+            spectrum,
+            proposals,
+            fourier,
+            config,
+            peak_counts=(config.max_peaks,),
+        )
     initial_count = max(1, len(proposals))
     largest_count = min(config.max_peaks, initial_count + 2)
     return build_candidates_for_counts(

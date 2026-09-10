@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from sifter.baseline import asls_baseline
+from sifter.baseline import asls_baseline, fit_polynomial_baseline
 from sifter.config import AutofitConfig
 from sifter.detection import PeakProposal, detect_peak_proposals
 from sifter.fourier import FourierDiagnostics, analyze_fourier
@@ -36,7 +36,7 @@ class SearchPreprocessing:
 
 def preprocess_spectrum(spectrum: Spectrum, config: AutofitConfig) -> SearchPreprocessing:
     """Compute reusable search evidence once for one analysis."""
-    baseline = _frozen(asls_baseline(spectrum.intensity))
+    baseline = _frozen(_proposal_baseline(spectrum, config))
     adjusted = _frozen(spectrum.intensity - baseline)
     proposal_spectrum = Spectrum(
         spectrum.x,
@@ -81,3 +81,11 @@ def _frozen(values: NDArray[np.float64]) -> NDArray[np.float64]:
     copied = np.array(values, dtype=np.float64, copy=True)
     copied.setflags(write=False)
     return copied
+
+
+def _proposal_baseline(spectrum: Spectrum, config: AutofitConfig) -> NDArray[np.float64]:
+    if len(config.baseline_orders) == 1:
+        return fit_polynomial_baseline(spectrum, order=config.baseline_orders[0]).evaluate(
+            spectrum.x
+        )
+    return asls_baseline(spectrum.intensity)

@@ -1,7 +1,7 @@
 """SIFTER public package namespace."""
 
 from sifter.api import AnalysisError, autofit
-from sifter.config import AutofitConfig, SearchMode
+from sifter.config import AutofitConfig, PeakCountMode, SearchMode
 from sifter.context import MeasurementContext
 from sifter.preview import SpectrumPreview, preview_spectrum
 from sifter.progress import ProgressCallback, ProgressEvent, ProgressPhase
@@ -10,7 +10,7 @@ from sifter.related import summarize_related_spectra
 from sifter.result import AnalysisSettings, FitResult, FittedPeak, ModelResult
 from sifter.spectrum import Spectrum
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 __all__ = [
     "AnalysisError",
@@ -21,6 +21,7 @@ __all__ = [
     "FitReference",
     "MeasurementContext",
     "ModelResult",
+    "PeakCountMode",
     "ProgressCallback",
     "ProgressEvent",
     "ProgressPhase",

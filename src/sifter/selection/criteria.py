@@ -23,6 +23,20 @@ class InformationCriteria:
 
 
 @dataclass(frozen=True, slots=True)
+class ComponentDiagnostic:
+    """Structural interpretation for one fitted component."""
+
+    peak_index: int
+    center: float
+    maxima_spanned: int
+    maxima_centers: tuple[float, ...]
+    support_lower: float
+    support_upper: float
+    admissibility: Literal["valid", "warning", "inadmissible"]
+    warning_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class CandidateScore:
     """One row in the complete candidate comparison table."""
 
@@ -39,6 +53,7 @@ class CandidateScore:
     reduced_chi_squared: float | None
     warnings: tuple[str, ...]
     failure_code: str | None
+    component_diagnostics: tuple[ComponentDiagnostic, ...] = ()
 
     @property
     def peak_count(self) -> int:
@@ -96,8 +111,17 @@ def score_candidate(
             failure_code=failure_code,
         )
 
-    violation = _component_multimax_violation(result, spectrum)
-    if violation is not None and not allow_broad_multimax_component:
+    component_diagnostics = component_diagnostics_for_fit(result, spectrum)
+    fatal = next(
+        (
+            diagnostic.warning_code
+            for diagnostic in component_diagnostics
+            if diagnostic.admissibility == "inadmissible"
+            and diagnostic.warning_code is not None
+        ),
+        None,
+    )
+    if fatal is not None:
         return CandidateScore(
             spec=result.spec,
             status="inadmissible",
@@ -110,8 +134,9 @@ def score_candidate(
             delta_bic=None,
             residual_variance=None,
             reduced_chi_squared=None,
-            warnings=(violation,),
-            failure_code=violation,
+            warnings=(fatal,),
+            failure_code=fatal,
+            component_diagnostics=component_diagnostics,
         )
 
     observation_count = spectrum.x.size
@@ -141,7 +166,14 @@ def score_candidate(
             else float(np.dot(standardized, standardized) / degrees_of_freedom)
         )
     warnings = () if criteria.aicc is not None else ("AICC_UNDEFINED",)
-    if violation is not None:
+    structural_warnings = tuple(
+        diagnostic.warning_code
+        for diagnostic in component_diagnostics
+        if diagnostic.admissibility == "warning" and diagnostic.warning_code is not None
+    )
+    if structural_warnings:
+        warnings = (*warnings, *structural_warnings)
+    if allow_broad_multimax_component and structural_warnings:
         warnings = (*warnings, "BROAD_MULTIMAX_COMPONENT_ALLOWED")
     return CandidateScore(
         spec=result.spec,
@@ -157,6 +189,7 @@ def score_candidate(
         reduced_chi_squared=reduced_chi_squared,
         warnings=warnings,
         failure_code=None,
+        component_diagnostics=component_diagnostics,
     )
 
 
@@ -210,7 +243,10 @@ def rank_candidates(
     return tuple(ranked)
 
 
-def _component_multimax_violation(result: CandidateFit, spectrum: Spectrum) -> str | None:
+def component_diagnostics_for_fit(
+    result: CandidateFit, spectrum: Spectrum
+) -> tuple[ComponentDiagnostic, ...]:
+    """Classify component support against resolved maxima without banning overlap."""
     baseline_adjusted = spectrum.intensity - result.baseline
     try:
         proposal_spectrum = Spectrum(
@@ -223,23 +259,45 @@ def _component_multimax_violation(result: CandidateFit, spectrum: Spectrum) -> s
             metadata=spectrum.metadata,
         )
     except ValueError:
-        return None
+        return ()
     proposals = detect_peak_proposals(
         proposal_spectrum,
         max_peaks=min(max(2, result.spec.peak_count * 3), 20),
     )
     proposals = _merge_unresolved_proposals(proposals, spectrum.grid.median_step)
-    if len(proposals) < 2:
-        return None
-    for peak in result.peaks:
+    diagnostics: list[ComponentDiagnostic] = []
+    for index, peak in enumerate(result.peaks):
         half_width = _peak_fwhm(result.spec.shape, peak) / 2.0
-        maxima_in_component = sum(
-            peak.center - half_width <= proposal.center <= peak.center + half_width
+        support_lower = float(peak.center - half_width)
+        support_upper = float(peak.center + half_width)
+        maxima_centers = tuple(
+            float(proposal.center)
             for proposal in proposals
+            if support_lower <= proposal.center <= support_upper
         )
-        if maxima_in_component > 1:
-            return "COMPONENT_SPANS_MULTIPLE_MAXIMA"
-    return None
+        maxima_spanned = len(maxima_centers)
+        if maxima_spanned > 2:
+            admissibility: Literal["valid", "warning", "inadmissible"] = "inadmissible"
+            warning_code = "COMPONENT_SPANS_MORE_THAN_TWO_MAXIMA"
+        elif maxima_spanned == 2:
+            admissibility = "warning"
+            warning_code = "COMPONENT_SPANS_TWO_MAXIMA"
+        else:
+            admissibility = "valid"
+            warning_code = None
+        diagnostics.append(
+            ComponentDiagnostic(
+                peak_index=index,
+                center=float(peak.center),
+                maxima_spanned=maxima_spanned,
+                maxima_centers=maxima_centers,
+                support_lower=support_lower,
+                support_upper=support_upper,
+                admissibility=admissibility,
+                warning_code=warning_code,
+            )
+        )
+    return tuple(diagnostics)
 
 
 def _merge_unresolved_proposals(

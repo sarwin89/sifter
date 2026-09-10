@@ -13,6 +13,7 @@ JSONScalar: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
 PeakShape: TypeAlias = Literal["gaussian", "lorentzian", "voigt"]
 SearchMode: TypeAlias = Literal["fast", "standard", "thorough", "exhaustive"]
+PeakCountMode: TypeAlias = Literal["auto", "exact"]
 UncertaintyMode: TypeAlias = Literal["covariance", "bootstrap"]
 
 SUPPORTED_SHAPES: frozenset[str] = frozenset({"gaussian", "lorentzian", "voigt"})
@@ -32,6 +33,7 @@ class AutofitConfig:
 
     max_peaks: int = 10
     search_mode: SearchMode = "standard"
+    peak_count_mode: PeakCountMode = "auto"
     shapes: tuple[PeakShape, ...] = ("gaussian", "lorentzian", "voigt")
     baseline_orders: tuple[int, ...] = (0, 1, 2)
     fourier: bool = True
@@ -49,6 +51,8 @@ class AutofitConfig:
             raise ValueError("max_peaks must be a positive integer")
         if self.search_mode not in {"fast", "standard", "thorough", "exhaustive"}:
             raise ValueError("search_mode must be fast, standard, thorough, or exhaustive")
+        if self.peak_count_mode not in {"auto", "exact"}:
+            raise ValueError("peak_count_mode must be auto or exact")
         if not self.shapes:
             raise ValueError("at least one peak shape is required")
         if len(set(self.shapes)) != len(self.shapes):

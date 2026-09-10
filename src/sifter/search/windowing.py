@@ -77,6 +77,8 @@ def build_windowed_candidates(
     """Use local window fits only to initialize full-spectrum candidates."""
     if policy.exhaustive:
         return ()
+    if config.peak_count_mode == "exact":
+        return ()
     windows = plan_peak_windows(spectrum, preprocessing, config)
     if not windows:
         return ()

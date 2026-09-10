@@ -11,13 +11,13 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from sifter.config import JSONScalar, PeakShape, SearchMode, UncertaintyMode
+from sifter.config import JSONScalar, PeakCountMode, PeakShape, SearchMode, UncertaintyMode
 from sifter.context import MeasurementContext
 from sifter.diagnostics import DiagnosticWarning, ResidualDiagnostics
 from sifter.fitting import ParameterUncertainty
 from sifter.fourier import FourierDiagnostics
 from sifter.reference import FitReference
-from sifter.selection import CandidateScore
+from sifter.selection import CandidateScore, ComponentDiagnostic
 
 if TYPE_CHECKING:
     import plotly.graph_objects as go
@@ -28,6 +28,7 @@ class AnalysisSettings:
     """Complete reproducible settings used for one analysis."""
 
     max_peaks: int
+    peak_count_mode: PeakCountMode
     shapes: tuple[PeakShape, ...]
     baseline_orders: tuple[int, ...]
     fourier: bool
@@ -75,6 +76,7 @@ class ModelResult:
     parameter_count: int
     observation_count: int
     reduced_chi_squared: float | None
+    component_diagnostics: tuple[ComponentDiagnostic, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,10 +112,10 @@ class FitResult:
     def to_dataframe(self) -> pd.DataFrame:
         """Return one flat row per fitted peak."""
         uncertainty = _uncertainty_by_parameter(self.uncertainty)
-        rows: list[dict[str, str | int | float | None]] = []
+        rows: list[dict[str, object]] = []
         for index, peak in enumerate(self.best_model.peaks):
             prefix = f"peak.{index}."
-            row: dict[str, str | int | float | None] = {
+            row: dict[str, object] = {
                 "shape": self.best_model.shape,
                 "peak_index": index,
                 "area": peak.area,
@@ -123,6 +125,20 @@ class FitResult:
                 "bic": self.best_model.bic,
                 "aicc": self.best_model.aicc,
             }
+            if index < len(self.best_model.component_diagnostics):
+                diagnostic = self.best_model.component_diagnostics[index]
+                row.update(
+                    {
+                        "maxima_spanned": diagnostic.maxima_spanned,
+                        "maxima_centers": ";".join(
+                            f"{center:.12g}" for center in diagnostic.maxima_centers
+                        ),
+                        "support_lower": diagnostic.support_lower,
+                        "support_upper": diagnostic.support_upper,
+                        "admissibility": diagnostic.admissibility,
+                        "warning_code": diagnostic.warning_code,
+                    }
+                )
             for field in ("area", "center", "sigma", "gamma"):
                 estimate = uncertainty.get(prefix + field)
                 row[f"{field}_standard_error"] = None if estimate is None else estimate[0]
@@ -138,6 +154,7 @@ class FitResult:
             "sifter_version": self.sifter_version,
             "settings": {
                 "max_peaks": self.settings.max_peaks,
+                "peak_count_mode": self.settings.peak_count_mode,
                 "search_mode": self.settings.search_mode,
                 "shapes": self.settings.shapes,
                 "baseline_orders": self.settings.baseline_orders,
@@ -265,6 +282,10 @@ def _model_dict(model: ModelResult) -> dict[str, Any]:
         "parameter_count": model.parameter_count,
         "observation_count": model.observation_count,
         "reduced_chi_squared": model.reduced_chi_squared,
+        "component_diagnostics": [
+            _component_diagnostic_dict(diagnostic)
+            for diagnostic in model.component_diagnostics
+        ],
     }
 
 
@@ -285,6 +306,23 @@ def _candidate_dict(score: CandidateScore) -> dict[str, Any]:
         "reduced_chi_squared": score.reduced_chi_squared,
         "warnings": score.warnings,
         "failure_code": score.failure_code,
+        "component_diagnostics": [
+            _component_diagnostic_dict(diagnostic)
+            for diagnostic in score.component_diagnostics
+        ],
+    }
+
+
+def _component_diagnostic_dict(diagnostic: ComponentDiagnostic) -> dict[str, Any]:
+    return {
+        "peak_index": diagnostic.peak_index,
+        "center": diagnostic.center,
+        "maxima_spanned": diagnostic.maxima_spanned,
+        "maxima_centers": diagnostic.maxima_centers,
+        "support_lower": diagnostic.support_lower,
+        "support_upper": diagnostic.support_upper,
+        "admissibility": diagnostic.admissibility,
+        "warning_code": diagnostic.warning_code,
     }
 
 
