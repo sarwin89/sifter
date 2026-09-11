@@ -10,7 +10,7 @@ def test_autofit_config_has_conservative_defaults() -> None:
     assert config.search_mode == "standard"
     assert config.peak_count_mode == "auto"
     assert config.shapes == ("gaussian", "lorentzian", "voigt")
-    assert config.baseline_orders == (0, 1, 2)
+    assert config.baseline_orders == (0,)
     assert config.fourier
     assert not config.interpolate_nonuniform_fft
     assert config.uncertainty == "covariance"
@@ -30,7 +30,16 @@ def test_autofit_config_has_conservative_defaults() -> None:
         ({"shapes": ("gaussian", "gaussian")}, "unique"),
         ({"shapes": ("pseudo_voigt",)}, "unsupported"),
         ({"baseline_orders": ()}, "baseline"),
+        ({"baseline_orders": (0, 1)}, "constant"),
+        ({"baseline_orders": (1,)}, "constant"),
         ({"baseline_orders": (3,)}, "baseline"),
+        ({"manual_peak_centers": tuple(float(index) for index in range(10))}, "manual"),
+        ({"manual_peak_centers": (1.0, 1.0)}, "unique"),
+        ({"manual_peak_centers": (float("nan"),)}, "finite"),
+        (
+            {"peak_count_mode": "exact", "max_peaks": 1, "manual_peak_centers": (1.0, 2.0)},
+            "manual",
+        ),
         ({"uncertainty": "profile"}, "uncertainty"),
         ({"bootstrap_samples": 200}, "bootstrap_samples"),
         ({"random_seed": -1}, "random_seed"),

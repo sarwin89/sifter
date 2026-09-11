@@ -302,40 +302,12 @@ def autofit(
 
     assert best_score.aicc is not None and best_score.bic is not None
     assert best_score.rss is not None and best_score.rmse is not None
-    layout = ParameterLayout(
-        best_fit.spec.shape,
-        best_fit.spec.peak_count,
-        best_fit.spec.baseline_order,
-    )
-    model = ModelResult(
-        shape=best_fit.spec.shape,
-        peak_count=best_fit.spec.peak_count,
-        baseline_order=best_fit.spec.baseline_order,
-        parameter_names=layout.names,
-        parameters=frozen_array(best_fit.parameters),
-        lower_bounds=best_fit.spec.lower_bounds,
-        upper_bounds=best_fit.spec.upper_bounds,
-        peaks=tuple(
-            FittedPeak(
-                area=peak.area,
-                center=peak.center,
-                sigma=peak.sigma,
-                gamma=peak.gamma,
-            )
-            for peak in best_fit.peaks
-        ),
-        fitted=frozen_array(best_fit.fitted),
-        baseline=frozen_array(best_fit.baseline),
-        components=frozen_array(best_fit.components),
-        residuals=frozen_array(best_fit.residuals),
-        rss=best_score.rss,
-        rmse=best_score.rmse,
-        aicc=best_score.aicc,
-        bic=best_score.bic,
-        parameter_count=best_score.parameter_count,
+    model = _model_result(best_fit, best_score, observation_count=spectrum.x.size)
+    candidate_models = _top_candidate_models(
+        ranked,
+        successful,
         observation_count=spectrum.x.size,
-        reduced_chi_squared=best_score.reduced_chi_squared,
-        component_diagnostics=best_score.component_diagnostics,
+        limit=10,
     )
     result = FitResult(
         schema_version="sifter.fit_result.v2",
@@ -352,6 +324,7 @@ def autofit(
             search_mode=settings.search_mode,
             workers=settings.workers,
             allow_broad_multimax_component=settings.allow_broad_multimax_component,
+            manual_peak_centers=settings.manual_peak_centers,
             measurement_context=settings.measurement_context,
             reference=settings.reference,
         ),
@@ -363,6 +336,7 @@ def autofit(
         x_unit=spectrum.x_unit,
         intensity_name=spectrum.intensity_name,
         best_model=model,
+        candidate_models=candidate_models,
         candidates=ranked,
         fourier=preprocessing.fourier,
         residual_diagnostics=diagnostics,
@@ -428,6 +402,73 @@ def _count_filtered_candidates(
         return candidates
     return tuple(
         candidate for candidate in candidates if candidate.peak_count == settings.max_peaks
+    )
+
+
+def _top_candidate_models(
+    ranked: tuple[CandidateScore, ...],
+    successful: dict[ModelSpec, CandidateFit],
+    *,
+    observation_count: int,
+    limit: int,
+) -> tuple[ModelResult, ...]:
+    models: list[ModelResult] = []
+    for score in ranked:
+        if len(models) == limit:
+            break
+        if score.status != "valid" or score.aicc is None or score.bic is None:
+            continue
+        fit = successful.get(score.spec)
+        if fit is None:
+            continue
+        models.append(_model_result(fit, score, observation_count=observation_count))
+    return tuple(models)
+
+
+def _model_result(
+    fit: CandidateFit,
+    score: CandidateScore,
+    *,
+    observation_count: int,
+) -> ModelResult:
+    assert score.rss is not None
+    assert score.rmse is not None
+    assert score.aicc is not None
+    assert score.bic is not None
+    layout = ParameterLayout(
+        fit.spec.shape,
+        fit.spec.peak_count,
+        fit.spec.baseline_order,
+    )
+    return ModelResult(
+        shape=fit.spec.shape,
+        peak_count=fit.spec.peak_count,
+        baseline_order=fit.spec.baseline_order,
+        parameter_names=layout.names,
+        parameters=frozen_array(fit.parameters),
+        lower_bounds=fit.spec.lower_bounds,
+        upper_bounds=fit.spec.upper_bounds,
+        peaks=tuple(
+            FittedPeak(
+                area=peak.area,
+                center=peak.center,
+                sigma=peak.sigma,
+                gamma=peak.gamma,
+            )
+            for peak in fit.peaks
+        ),
+        fitted=frozen_array(fit.fitted),
+        baseline=frozen_array(fit.baseline),
+        components=frozen_array(fit.components),
+        residuals=frozen_array(fit.residuals),
+        rss=score.rss,
+        rmse=score.rmse,
+        aicc=score.aicc,
+        bic=score.bic,
+        parameter_count=score.parameter_count,
+        observation_count=observation_count,
+        reduced_chi_squared=score.reduced_chi_squared,
+        component_diagnostics=score.component_diagnostics,
     )
 
 

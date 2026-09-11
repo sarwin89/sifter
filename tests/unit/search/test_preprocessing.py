@@ -58,3 +58,34 @@ def test_flat_baseline_preprocessing_uses_flat_polynomial_context() -> None:
 
     np.testing.assert_allclose(result.baseline, flat)
     np.testing.assert_allclose(result.adjusted, spectrum.intensity - flat)
+
+
+def test_preprocessing_merges_manual_peak_centers_into_proposals() -> None:
+    spectrum, _ = easy_two_peak_spectrum(seed=12)
+    config = AutofitConfig(
+        max_peaks=4,
+        shapes=("gaussian",),
+        baseline_orders=(0,),
+        fourier=False,
+        manual_peak_centers=(2.35,),
+    )
+
+    result = preprocess_spectrum(spectrum, config)
+
+    manual = [proposal for proposal in result.proposals if "manual" in proposal.sources]
+    assert [proposal.center for proposal in manual] == pytest.approx([2.35])
+    assert any(center == pytest.approx(2.35) for center in result.detection.centers)
+
+
+def test_preprocessing_rejects_manual_peak_center_outside_spectrum() -> None:
+    spectrum, _ = easy_two_peak_spectrum(seed=12)
+    config = AutofitConfig(
+        max_peaks=4,
+        shapes=("gaussian",),
+        baseline_orders=(0,),
+        fourier=False,
+        manual_peak_centers=(float(spectrum.x[-1] + 1.0),),
+    )
+
+    with pytest.raises(ValueError, match="manual peak"):
+        preprocess_spectrum(spectrum, config)

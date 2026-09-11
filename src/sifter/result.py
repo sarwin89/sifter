@@ -16,6 +16,9 @@ from sifter.context import MeasurementContext
 from sifter.diagnostics import DiagnosticWarning, ResidualDiagnostics
 from sifter.fitting import ParameterUncertainty
 from sifter.fourier import FourierDiagnostics
+from sifter.lineshapes.gaussian import gaussian, gaussian_fwhm
+from sifter.lineshapes.lorentzian import lorentzian, lorentzian_fwhm
+from sifter.lineshapes.voigt import voigt, voigt_fwhm
 from sifter.reference import FitReference
 from sifter.selection import CandidateScore, ComponentDiagnostic
 
@@ -39,6 +42,7 @@ class AnalysisSettings:
     search_mode: SearchMode = "standard"
     workers: int = 1
     allow_broad_multimax_component: bool = False
+    manual_peak_centers: tuple[float, ...] = ()
     measurement_context: MeasurementContext | None = None
     reference: FitReference | None = None
 
@@ -93,6 +97,7 @@ class FitResult:
     x_unit: str | None
     intensity_name: str
     best_model: ModelResult
+    candidate_models: tuple[ModelResult, ...]
     candidates: tuple[CandidateScore, ...]
     fourier: FourierDiagnostics | None
     residual_diagnostics: ResidualDiagnostics
@@ -103,11 +108,22 @@ class FitResult:
     measurement_context: MeasurementContext | None = None
     reference: FitReference | None = None
 
-    def plot(self) -> dict[str, "go.Figure"]:
+    def plot(
+        self,
+        *,
+        model: ModelResult | None = None,
+        max_points: int | None = None,
+        show_components: bool = True,
+    ) -> dict[str, "go.Figure"]:
         """Build publication-neutral interactive figures from this result."""
         from sifter.plotting import plot_result
 
-        return plot_result(self)
+        return plot_result(
+            self,
+            model=model,
+            max_points=max_points,
+            show_components=show_components,
+        )
 
     def to_dataframe(self) -> pd.DataFrame:
         """Return one flat row per fitted peak."""
@@ -147,6 +163,35 @@ class FitResult:
             rows.append(row)
         return pd.DataFrame(rows)
 
+    def to_peak_table(self, *, model: ModelResult | None = None) -> pd.DataFrame:
+        """Return the user-facing fitted peak measurement table."""
+        selected = self.best_model if model is None else model
+        rows: list[dict[str, object]] = []
+        for index, peak in enumerate(selected.peaks):
+            diagnostic = (
+                selected.component_diagnostics[index]
+                if index < len(selected.component_diagnostics)
+                else None
+            )
+            height = _peak_height(selected.shape, peak)
+            width = _peak_fwhm(selected.shape, peak)
+            rows.append(
+                {
+                    "peak": index + 1,
+                    "location": peak.center,
+                    "height": height,
+                    "width_fwhm": width,
+                    "area": peak.area,
+                    "fit_note": _fit_note(diagnostic),
+                    "maxima_spanned": None if diagnostic is None else diagnostic.maxima_spanned,
+                    "local_area_error": _local_area_error(
+                        self, selected, index, peak, width, diagnostic
+                    ),
+                    "height_error": _height_error(self, selected, peak, height),
+                }
+            )
+        return pd.DataFrame(rows)
+
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-oriented result dictionary with privacy-safe metadata."""
         payload: dict[str, Any] = {
@@ -167,6 +212,7 @@ class FitResult:
                 "allow_broad_multimax_component": (
                     self.settings.allow_broad_multimax_component
                 ),
+                "manual_peak_centers": self.settings.manual_peak_centers,
                 "measurement_context": (
                     None
                     if self.settings.measurement_context is None
@@ -187,6 +233,7 @@ class FitResult:
             "intensity": self.intensity,
             "sigma": self.sigma,
             "best_model": _model_dict(self.best_model),
+            "candidate_models": [_model_dict(model) for model in self.candidate_models],
             "candidates": [_candidate_dict(score) for score in self.candidates],
             "fourier": _fourier_dict(self.fourier),
             "residual_diagnostics": {
@@ -287,6 +334,86 @@ def _model_dict(model: ModelResult) -> dict[str, Any]:
             for diagnostic in model.component_diagnostics
         ],
     }
+
+
+def _peak_height(shape: PeakShape, peak: FittedPeak) -> float:
+    center = np.array([peak.center], dtype=np.float64)
+    if shape == "gaussian":
+        if peak.sigma is None:
+            return float("nan")
+        return float(gaussian(center, area=peak.area, center=peak.center, sigma=peak.sigma)[0])
+    if shape == "lorentzian":
+        if peak.gamma is None:
+            return float("nan")
+        return float(lorentzian(center, area=peak.area, center=peak.center, gamma=peak.gamma)[0])
+    if peak.sigma is None or peak.gamma is None:
+        return float("nan")
+    return float(
+        voigt(center, area=peak.area, center=peak.center, sigma=peak.sigma, gamma=peak.gamma)[0]
+    )
+
+
+def _peak_fwhm(shape: PeakShape, peak: FittedPeak) -> float:
+    if shape == "gaussian":
+        return float("nan") if peak.sigma is None else gaussian_fwhm(peak.sigma)
+    if shape == "lorentzian":
+        return float("nan") if peak.gamma is None else lorentzian_fwhm(peak.gamma)
+    if peak.sigma is None or peak.gamma is None:
+        return float("nan")
+    return voigt_fwhm(sigma=peak.sigma, gamma=peak.gamma)
+
+
+def _fit_note(diagnostic: ComponentDiagnostic | None) -> str:
+    if diagnostic is None:
+        return "clear"
+    if diagnostic.maxima_spanned == 2:
+        return "shoulder"
+    if diagnostic.maxima_spanned > 2 or diagnostic.admissibility == "inadmissible":
+        return "check fit"
+    if diagnostic.warning_code:
+        return "overlapping"
+    return "clear"
+
+
+def _local_area_error(
+    result: FitResult,
+    model: ModelResult,
+    index: int,
+    peak: FittedPeak,
+    width: float,
+    diagnostic: ComponentDiagnostic | None,
+) -> float:
+    if result.x.size < 2:
+        return 0.0
+    lower = (
+        diagnostic.support_lower
+        if diagnostic is not None
+        else peak.center - max(width, np.finfo(float).eps)
+    )
+    upper = (
+        diagnostic.support_upper
+        if diagnostic is not None
+        else peak.center + max(width, np.finfo(float).eps)
+    )
+    mask = (result.x >= lower) & (result.x <= upper)
+    if not np.any(mask):
+        nearest = int(np.argmin(np.abs(result.x - peak.center)))
+        mask[nearest] = True
+    residual_area = float(np.trapezoid(np.abs(model.residuals[mask]), result.x[mask]))
+    component_area = float(np.trapezoid(np.abs(model.components[index][mask]), result.x[mask]))
+    return residual_area / max(component_area, np.finfo(float).eps)
+
+
+def _height_error(
+    result: FitResult,
+    model: ModelResult,
+    peak: FittedPeak,
+    height: float,
+) -> float:
+    if not np.isfinite(height) or height <= 0:
+        return float("nan")
+    nearest = int(np.argmin(np.abs(result.x - peak.center)))
+    return float(abs(model.residuals[nearest]) / height)
 
 
 def _candidate_dict(score: CandidateScore) -> dict[str, Any]:

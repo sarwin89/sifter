@@ -1,6 +1,8 @@
 import json
 from dataclasses import replace
 
+import pytest
+
 from sifter import AutofitConfig, MeasurementContext, autofit
 from tests.helpers import easy_one_peak_spectrum
 
@@ -12,6 +14,53 @@ def test_dataframe_is_a_flat_peak_table() -> None:
 
     assert list(table["peak_index"]) == [0]
     assert {"shape", "area", "center", "sigma", "gamma", "bic", "aicc"} <= set(table.columns)
+
+
+def test_peak_table_uses_human_measurements_for_default_export() -> None:
+    result = _fitted_result()
+
+    table = result.to_peak_table()
+    peak = result.best_model.peaks[0]
+
+    assert list(table.columns) == [
+        "peak",
+        "location",
+        "height",
+        "width_fwhm",
+        "area",
+        "fit_note",
+        "maxima_spanned",
+        "local_area_error",
+        "height_error",
+    ]
+    assert table.loc[0, "peak"] == 1
+    assert table.loc[0, "location"] == peak.center
+    assert table.loc[0, "height"] == pytest.approx(
+        peak.area / (peak.sigma * (2.0 * 3.141592653589793) ** 0.5)
+    )
+    assert table.loc[0, "width_fwhm"] == pytest.approx(
+        2.0 * (2.0 * 0.6931471805599453) ** 0.5 * peak.sigma
+    )
+    assert table.loc[0, "fit_note"] == "clear"
+
+
+def test_peak_table_can_describe_a_selected_candidate_model() -> None:
+    result = autofit(
+        easy_one_peak_spectrum(),
+        config=AutofitConfig(
+            max_peaks=1,
+            shapes=("gaussian", "lorentzian"),
+            baseline_orders=(0,),
+            fourier=False,
+        ),
+    )
+    selected = result.candidate_models[-1]
+
+    table = result.to_peak_table(model=selected)
+
+    assert len(table) == selected.peak_count
+    assert table.loc[0, "location"] == selected.peaks[0].center
+    assert table.loc[0, "height"] > 0
 
 
 def test_json_is_standard_compliant_and_excludes_private_paths() -> None:

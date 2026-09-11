@@ -31,6 +31,8 @@ def test_upload_exposes_confirmable_defaults_but_waits_for_analyze() -> None:
     assert app.selectbox(key="peak_count_mode").value == "Auto up to maximum"
     assert app.selectbox(key="search_mode").value == "Standard"
     assert app.multiselect(key="shapes").value == ["Gaussian", "Lorentzian", "Voigt"]
+    assert app.text_input(key="manual_peak_centers").value == ""
+    assert all(getattr(widget, "key", None) != "baselines" for widget in app.multiselect)
     assert app.checkbox(key="fourier_enabled").value is True
     assert app.number_input(key="random_seed").value == 42
     assert any("Pre-fit preview" in item.value for item in app.markdown)
@@ -62,14 +64,15 @@ def test_synthetic_upload_reaches_results_view_and_exports() -> None:
     app.file_uploader[0].upload("synthetic.csv", _two_peak_csv(), "text/csv").run()
     app.number_input(key="max_peaks").set_value(2)
     app.multiselect(key="shapes").set_value(["Gaussian"])
-    app.multiselect(key="baselines").set_value([0])
     app.button(key="analyze").click().run(timeout=60)
 
     assert app.exception == []
-    assert any("Recommended model" in item.value for item in app.subheader)
-    assert len(app.get("plotly_chart")) >= 2
+    assert any("Recommended fit" in item.value for item in app.subheader)
+    assert any("Peak measurements" in item.value for item in app.subheader)
+    assert len(app.get("plotly_chart")) == 1
     assert len(app.download_button) == 3
-    assert any("Candidate models" in item.value for item in app.subheader)
+    assert any("Candidate explorer" in item.value for item in app.subheader)
+    assert any("Advanced model selection" in item.value for item in app.subheader)
     assert any("Covariance" in item.value for item in app.caption)
     assert app.get("progress")[-1].value == 100
 
@@ -79,7 +82,6 @@ def test_results_view_explains_unavailable_fourier_diagnostics() -> None:
     app.file_uploader[0].upload("nonuniform.csv", _nonuniform_one_peak_csv(), "text/csv").run()
     app.number_input(key="max_peaks").set_value(1)
     app.multiselect(key="shapes").set_value(["Gaussian"])
-    app.multiselect(key="baselines").set_value([0])
     app.button(key="analyze").click().run(timeout=60)
 
     assert app.exception == []

@@ -3,6 +3,7 @@ import pytest
 
 from sifter import AutofitConfig, Spectrum
 from sifter.detection import PeakProposal
+from sifter.fourier import FourierDiagnostics
 from sifter.lineshapes import voigt_fwhm
 from sifter.models import ParameterLayout, build_candidates, build_candidates_for_counts
 
@@ -24,27 +25,25 @@ def test_candidate_builder_includes_every_simpler_count_deterministically() -> N
     assert all(len({peak.center for peak in spec.starts}) == spec.peak_count for spec in first)
 
 
-def test_builder_crosses_shapes_and_baselines_without_mixed_families() -> None:
+def test_builder_crosses_shapes_without_mixed_families() -> None:
     config = AutofitConfig(
         max_peaks=1,
         shapes=("gaussian", "voigt"),
-        baseline_orders=(0, 2),
+        baseline_orders=(0,),
     )
 
     specs = build_candidates(_example_spectrum(), (), None, config)
 
     assert {(spec.shape, spec.baseline_order) for spec in specs} == {
         ("gaussian", 0),
-        ("gaussian", 2),
         ("voigt", 0),
-        ("voigt", 2),
     }
     assert all(spec.peak_count == 1 for spec in specs)
 
 
 def test_builder_uses_grid_and_span_for_positive_width_bounds() -> None:
     spectrum = _example_spectrum()
-    config = AutofitConfig(max_peaks=1, shapes=("voigt",), baseline_orders=(1,))
+    config = AutofitConfig(max_peaks=1, shapes=("voigt",), baseline_orders=(0,))
 
     spec = build_candidates(spectrum, (), None, config)[0]
     layout = ParameterLayout(spec.shape, spec.peak_count, spec.baseline_order)
@@ -117,7 +116,7 @@ def test_explicit_count_builder_uses_only_requested_counts_deterministically() -
     config = AutofitConfig(
         max_peaks=5,
         shapes=("gaussian", "voigt"),
-        baseline_orders=(0, 1),
+        baseline_orders=(0,),
     )
 
     first = build_candidates_for_counts(
@@ -137,7 +136,38 @@ def test_explicit_count_builder_uses_only_requested_counts_deterministically() -
 
     assert first == second
     assert {spec.peak_count for spec in first} == {1, 3, 5}
-    assert len(first) == 3 * 2 * 2
+    assert len(first) == 3 * 2
+
+
+def test_candidate_builder_ignores_grid_scale_fourier_spacing_for_missing_centers() -> None:
+    spectrum = _example_spectrum()
+    proposals = (
+        PeakProposal(2.0, 0.2, 5.0, frozenset({"prominence"})),
+        PeakProposal(5.0, 0.2, 4.0, frozenset({"derivative"})),
+        PeakProposal(8.0, 0.2, 3.0, frozenset({"prominence"})),
+    )
+    tiny_spacing = FourierDiagnostics(
+        applicable=True,
+        interpolated=True,
+        frequency=np.array([1.0]),
+        magnitude=np.array([1.0]),
+        envelope_fits=(),
+        candidate_spacings=(spectrum.grid.median_step,),
+        window="hann",
+        warning_code=None,
+    )
+    config = AutofitConfig(max_peaks=6, shapes=("voigt",), baseline_orders=(0,))
+
+    spec = build_candidates_for_counts(
+        spectrum,
+        proposals,
+        tiny_spacing,
+        config,
+        peak_counts=(6,),
+    )[0]
+
+    separations = np.diff([peak.center for peak in spec.starts])
+    assert float(np.min(separations)) > 10.0 * spectrum.grid.median_step
 
 
 @pytest.mark.parametrize("peak_counts", [(), (0,), (6,)])

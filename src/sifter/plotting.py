@@ -6,42 +6,51 @@ import numpy as np
 import plotly.graph_objects as go
 from PIL import Image, ImageDraw
 
-from sifter.result import FitResult
+from sifter.result import FitResult, ModelResult
 
 
-def plot_result(result: FitResult) -> dict[str, go.Figure]:
+def plot_result(
+    result: FitResult,
+    *,
+    model: ModelResult | None = None,
+    max_points: int | None = None,
+    show_components: bool = True,
+) -> dict[str, go.Figure]:
     """Build decomposition, residual, and optional Fourier figures."""
+    selected = result.best_model if model is None else model
+    indices = _display_indices(result.x.size, max_points)
     fit_figure = go.Figure()
     fit_figure.add_scatter(
-        x=result.x,
-        y=result.intensity,
+        x=result.x[indices],
+        y=result.intensity[indices],
         mode="markers",
         name="Observed",
         marker={"color": "#66746e", "size": 5},
     )
     fit_figure.add_scatter(
-        x=result.x,
-        y=result.best_model.fitted,
+        x=result.x[indices],
+        y=selected.fitted[indices],
         mode="lines",
         name="Recommended fit",
         line={"color": "#176b55", "width": 3},
     )
     fit_figure.add_scatter(
-        x=result.x,
-        y=result.best_model.baseline,
+        x=result.x[indices],
+        y=selected.baseline[indices],
         mode="lines",
         name="Baseline",
         line={"color": "#8d6e35", "dash": "dash"},
     )
     component_colors = ("#b9822f", "#b65e4a", "#5f7f8a", "#7c6b91", "#597347", "#9a725d")
-    for index, component in enumerate(result.best_model.components, start=1):
-        fit_figure.add_scatter(
-            x=result.x,
-            y=component,
-            mode="lines",
-            name=f"Peak {index}",
-            line={"color": component_colors[(index - 1) % len(component_colors)], "width": 2},
-        )
+    if show_components:
+        for index, component in enumerate(selected.components, start=1):
+            fit_figure.add_scatter(
+                x=result.x[indices],
+                y=component[indices],
+                mode="lines",
+                name=f"Peak {index}",
+                line={"color": component_colors[(index - 1) % len(component_colors)], "width": 2},
+            )
     fit_figure.update_layout(
         xaxis_title=_axis_title(result.x_name, result.x_unit),
         yaxis_title=result.intensity_name,
@@ -50,8 +59,8 @@ def plot_result(result: FitResult) -> dict[str, go.Figure]:
 
     residual_figure = go.Figure()
     residual_figure.add_scatter(
-        x=result.x,
-        y=result.best_model.residuals,
+        x=result.x[indices],
+        y=selected.residuals[indices],
         mode="markers",
         name="Residuals",
         marker={"color": "#176b55", "size": 6},
@@ -79,6 +88,14 @@ def plot_result(result: FitResult) -> dict[str, go.Figure]:
         )
         figures["fourier"] = fourier_figure
     return figures
+
+
+def _display_indices(length: int, max_points: int | None) -> np.ndarray:
+    if max_points is None or max_points >= length:
+        return np.arange(length)
+    if max_points < 2:
+        raise ValueError("max_points must be at least 2")
+    return np.unique(np.linspace(0, length - 1, max_points, dtype=int))
 
 
 def render_fit_png(result: FitResult, *, width: int = 1600, height: int = 900) -> bytes:
