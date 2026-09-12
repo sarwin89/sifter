@@ -80,7 +80,7 @@ def test_windowed_candidates_use_global_baseline_and_return_only_global_specs() 
     config = AutofitConfig(
         max_peaks=3,
         shapes=("gaussian",),
-        baseline_orders=(1,),
+        baseline_orders=(0,),
         fourier=False,
         random_seed=12,
     )
@@ -94,7 +94,7 @@ def test_windowed_candidates_use_global_baseline_and_return_only_global_specs() 
         workers=1,
     )
 
-    expected_baseline = fit_polynomial_baseline(spectrum, order=1).coefficients
+    expected_baseline = fit_polynomial_baseline(spectrum, order=0).coefficients
     assert candidates
     assert all(isinstance(candidate, ModelSpec) for candidate in candidates)
     assert {candidate.peak_count for candidate in candidates} <= {2, 3}

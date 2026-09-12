@@ -99,7 +99,10 @@ def _candidate_centers(
     default_width = span / max(6.0 * peak_count, 12.0)
     spacing = None
     if fourier is not None and fourier.candidate_spacings:
-        spacing = fourier.candidate_spacings[0]
+        candidate_spacing = fourier.candidate_spacings[0]
+        minimum_useful_spacing = max(3.0 * spectrum.grid.median_step, 0.1 * default_width)
+        if candidate_spacing >= minimum_useful_spacing:
+            spacing = candidate_spacing
     fallback_centers = np.linspace(
         spectrum.x[0] + span / (peak_count + 1),
         spectrum.x[-1] - span / (peak_count + 1),
