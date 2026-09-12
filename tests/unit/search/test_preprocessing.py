@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from sifter import AutofitConfig
+from sifter.baseline import fit_polynomial_baseline
 from sifter.search import preprocess_spectrum
 from tests.helpers import easy_two_peak_spectrum
 
@@ -41,3 +42,50 @@ def test_preprocessing_returns_requested_fourier_diagnostics() -> None:
 
     assert result.fourier is not None
     assert result.fourier.window == "hann"
+
+
+def test_flat_baseline_preprocessing_uses_flat_polynomial_context() -> None:
+    spectrum, _ = easy_two_peak_spectrum(seed=12)
+    config = AutofitConfig(
+        max_peaks=4,
+        shapes=("gaussian",),
+        baseline_orders=(0,),
+        fourier=False,
+    )
+
+    result = preprocess_spectrum(spectrum, config)
+    flat = fit_polynomial_baseline(spectrum, order=0).evaluate(spectrum.x)
+
+    np.testing.assert_allclose(result.baseline, flat)
+    np.testing.assert_allclose(result.adjusted, spectrum.intensity - flat)
+
+
+def test_preprocessing_merges_manual_peak_centers_into_proposals() -> None:
+    spectrum, _ = easy_two_peak_spectrum(seed=12)
+    config = AutofitConfig(
+        max_peaks=4,
+        shapes=("gaussian",),
+        baseline_orders=(0,),
+        fourier=False,
+        manual_peak_centers=(2.35,),
+    )
+
+    result = preprocess_spectrum(spectrum, config)
+
+    manual = [proposal for proposal in result.proposals if "manual" in proposal.sources]
+    assert [proposal.center for proposal in manual] == pytest.approx([2.35])
+    assert any(center == pytest.approx(2.35) for center in result.detection.centers)
+
+
+def test_preprocessing_rejects_manual_peak_center_outside_spectrum() -> None:
+    spectrum, _ = easy_two_peak_spectrum(seed=12)
+    config = AutofitConfig(
+        max_peaks=4,
+        shapes=("gaussian",),
+        baseline_orders=(0,),
+        fourier=False,
+        manual_peak_centers=(float(spectrum.x[-1] + 1.0),),
+    )
+
+    with pytest.raises(ValueError, match="manual peak"):
+        preprocess_spectrum(spectrum, config)

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from sifter import AutofitConfig, Spectrum
+from sifter.detection import PeakProposal
 from sifter.fitting import CandidateFailure, CandidateFit
 from sifter.models import ModelSpec, ParameterLayout, PeakStart, build_candidates
 from sifter.selection import (
@@ -11,6 +12,7 @@ from sifter.selection import (
     score_candidate,
     unweighted_information_criteria,
 )
+from sifter.selection.criteria import _merge_unresolved_proposals
 from sifter.synthetic import SyntheticPeak, make_spectrum
 from tests.helpers import easy_one_peak_spectrum, one_gaussian_spec
 
@@ -93,7 +95,7 @@ def test_budget_exhausted_candidate_cannot_be_scored_as_final_evidence() -> None
     assert row.failure_code == "BUDGET_EXHAUSTED"
 
 
-def test_broad_component_spanning_resolved_maxima_is_inadmissible_by_default() -> None:
+def test_component_spanning_two_resolved_maxima_is_allowed_with_warning() -> None:
     spectrum, _ = make_spectrum(
         x=np.linspace(-4.0, 4.0, 401),
         peaks=(
@@ -106,9 +108,11 @@ def test_broad_component_spanning_resolved_maxima_is_inadmissible_by_default() -
 
     row = score_candidate(fit, spectrum)
 
-    assert row.status == "inadmissible"
-    assert row.bic is None
-    assert row.failure_code == "COMPONENT_SPANS_MULTIPLE_MAXIMA"
+    assert row.status == "valid"
+    assert row.bic is not None
+    assert "COMPONENT_SPANS_TWO_MAXIMA" in row.warnings
+    assert row.component_diagnostics[0].maxima_spanned == 2
+    assert row.component_diagnostics[0].admissibility == "warning"
 
 
 def test_broad_multimax_override_records_warning_and_keeps_candidate_rankable() -> None:
@@ -126,7 +130,44 @@ def test_broad_multimax_override_records_warning_and_keeps_candidate_rankable() 
 
     assert row.status == "valid"
     assert row.bic is not None
-    assert "BROAD_MULTIMAX_COMPONENT_ALLOWED" in row.warnings
+    assert "COMPONENT_SPANS_TWO_MAXIMA" in row.warnings
+
+
+def test_component_spanning_more_than_two_maxima_is_inadmissible_with_override() -> None:
+    spectrum, _ = make_spectrum(
+        x=np.linspace(-4.0, 4.0, 801),
+        peaks=(
+            SyntheticPeak("gaussian", area=1.0, center=-1.5, sigma=0.10),
+            SyntheticPeak("gaussian", area=1.0, center=0.0, sigma=0.10),
+            SyntheticPeak("gaussian", area=1.0, center=1.5, sigma=0.10),
+        ),
+        baseline=(0.1,),
+    )
+    fit = _fit_from_spec(spectrum, _single_broad_gaussian_spec(spectrum, sigma=1.8))
+
+    row = score_candidate(fit, spectrum, allow_broad_multimax_component=True)
+
+    assert row.status == "inadmissible"
+    assert row.bic is None
+    assert row.failure_code == "COMPONENT_SPANS_MORE_THAN_TWO_MAXIMA"
+    assert row.component_diagnostics[0].maxima_spanned == 3
+    assert row.component_diagnostics[0].admissibility == "inadmissible"
+
+
+def test_unresolved_detector_duplicates_count_as_one_maximum() -> None:
+    proposals = (
+        PeakProposal(1.616151, 0.0010, 120.0, frozenset({"prominence"})),
+        PeakProposal(1.618624, 0.0012, 115.0, frozenset({"derivative"})),
+        PeakProposal(1.655778, 0.0098, 224.0, frozenset({"prominence"})),
+    )
+
+    merged = _merge_unresolved_proposals(proposals, median_step=0.000164)
+
+    assert len(merged) == 2
+    assert merged[0].center == pytest.approx(
+        (1.616151 * 120.0 + 1.618624 * 115.0) / (120.0 + 115.0)
+    )
+    assert merged[1].center == pytest.approx(1.655778)
 
 
 def _candidate_fit(spectrum: Spectrum, *, peak_count: int, residual_value: float) -> CandidateFit:
@@ -153,13 +194,13 @@ def _candidate_fit(spectrum: Spectrum, *, peak_count: int, residual_value: float
     )
 
 
-def _single_broad_gaussian_spec(spectrum: Spectrum) -> ModelSpec:
+def _single_broad_gaussian_spec(spectrum: Spectrum, *, sigma: float = 1.2) -> ModelSpec:
     return ModelSpec(
         shape="gaussian",
         peak_count=1,
         baseline_order=0,
         baseline_start=(0.1,),
-        starts=(PeakStart(area=2.0, center=0.0, sigma=1.2),),
+        starts=(PeakStart(area=2.0, center=0.0, sigma=sigma),),
         lower_bounds=(-10.0, 0.0, float(spectrum.x[0]), spectrum.grid.median_step / 2.0),
         upper_bounds=(10.0, 10.0, float(spectrum.x[-1]), float(spectrum.x[-1] - spectrum.x[0])),
     )

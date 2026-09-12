@@ -45,7 +45,17 @@ def adaptive_screening(
         config,
         peak_counts=initial_counts,
     )
-    emit_progress(progress, "screening", 0, len(initial_candidates))
+    emit_progress(
+        progress,
+        "screening",
+        0,
+        len(initial_candidates),
+        message=(
+            f"counts {', '.join(str(count) for count in initial_counts)}; "
+            f"{len(config.shapes)} shape(s), {len(config.baseline_orders)} baseline(s), "
+            f"{config.workers} worker(s)"
+        ),
+    )
     records = list(
         screen_candidates(
             spectrum,

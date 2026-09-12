@@ -44,6 +44,10 @@ SEARCH_MODE_LABELS = {
     "Thorough": "thorough",
     "Exhaustive": "exhaustive",
 }
+PEAK_COUNT_MODE_LABELS = {
+    "Auto up to maximum": "auto",
+    "Force exact number": "exact",
+}
 PHASE_LABELS = {
     "preprocessing": "Preparing spectrum",
     "screening": "Screening candidate models",
@@ -151,7 +155,7 @@ def main() -> None:
 
     st.markdown("### 03 · Configure analysis")
     with st.form("analysis_settings"):
-        controls = st.columns((1, 1, 2, 1))
+        controls = st.columns((1, 1, 1, 2, 1))
         with controls[0]:
             max_peaks = int(
                 st.number_input(
@@ -164,6 +168,16 @@ def main() -> None:
                 )
             )
         with controls[1]:
+            peak_count_mode_label = st.selectbox(
+                "Peak count mode",
+                tuple(PEAK_COUNT_MODE_LABELS),
+                key="peak_count_mode",
+                help=(
+                    "Auto lets BIC/AICc choose any count up to the limit. "
+                    "Exact fits only the selected count."
+                ),
+            )
+        with controls[2]:
             search_mode_label = st.selectbox(
                 "Search mode",
                 tuple(SEARCH_MODE_LABELS),
@@ -171,20 +185,29 @@ def main() -> None:
                 key="search_mode",
                 help="Standard screens a detector-centered search; Exhaustive fits every count.",
             )
-        with controls[2]:
+        with controls[3]:
             selected_shapes = st.multiselect(
                 "Peak shapes",
                 tuple(SHAPE_LABELS),
                 default=tuple(SHAPE_LABELS),
                 key="shapes",
             )
-        with controls[3]:
+        with controls[4]:
             fourier_enabled = st.checkbox(
                 "Fourier assistance",
                 value=True,
                 key="fourier_enabled",
             )
-        selected_baselines = [0, 1, 2]
+        manual_peak_centers_text = st.text_input(
+            "Manual peak centers",
+            value="",
+            key="manual_peak_centers",
+            help=(
+                "Optional comma-separated x positions to seed additional peaks. "
+                "These are hints, not forced truths."
+            ),
+        )
+        selected_baselines = (0,)
         allow_fft_interpolation = False
         uncertainty_mode = "covariance"
         bootstrap_samples = 250
@@ -200,12 +223,7 @@ def main() -> None:
         condition_name = ""
         condition_value = ""
         with st.expander("Advanced settings", expanded=False):
-            selected_baselines = st.multiselect(
-                "Baseline polynomial orders",
-                [0, 1, 2],
-                default=[0, 1, 2],
-                key="baselines",
-            )
+            st.caption("Baseline is fixed to a constant offset in v0.4.")
             allow_fft_interpolation = st.checkbox(
                 "Allow diagnostic-only interpolation for nonuniform grids",
                 value=False,
@@ -241,12 +259,13 @@ def main() -> None:
                 )
             )
             allow_broad_multimax_component = st.checkbox(
-                "Allow known broad band across resolved maxima",
+                "Record known shoulder or two-maxima broad band",
                 value=False,
                 key="allow_broad_multimax_component",
                 help=(
-                    "Records an explicit override and allows otherwise "
-                    "structural-violation candidates."
+                    "Records an explicit interpretation when a component spans "
+                    "two resolved maxima. Components spanning more than two "
+                    "maxima remain inadmissible."
                 ),
             )
             st.markdown("Measurement context")
@@ -303,8 +322,16 @@ def main() -> None:
                     "Condition value",
                     key="condition_value",
                 )
-        estimated_candidates = max_peaks * len(selected_shapes) * len(selected_baselines)
-        st.caption(f"Search ceiling: {estimated_candidates} candidate fits · seed {random_seed}")
+        estimated_candidates = max_peaks * len(selected_shapes)
+        mode_text = (
+            f"exactly {max_peaks} peak(s)"
+            if PEAK_COUNT_MODE_LABELS[peak_count_mode_label] == "exact"
+            else f"up to {max_peaks} peak(s)"
+        )
+        st.caption(
+            f"Search target: {mode_text} · ceiling estimate {estimated_candidates} "
+            f"candidate fits · constant baseline · seed {random_seed}"
+        )
         if uncertainty_mode == "bootstrap":
             st.warning(
                 f"Thorough uncertainty adds {bootstrap_samples} refits after model selection."
@@ -313,8 +340,14 @@ def main() -> None:
             "Analyze spectrum",
             type="primary",
             key="analyze",
-            disabled=not selected_shapes or not selected_baselines,
+            disabled=not selected_shapes,
         )
+
+    try:
+        manual_peak_centers = _parse_manual_peak_centers(manual_peak_centers_text)
+    except ValueError as error:
+        st.error(str(error))
+        return
 
     try:
         spectrum = load_spectrum(
@@ -330,8 +363,11 @@ def main() -> None:
             spectrum,
             config=AutofitConfig(
                 max_peaks=max_peaks,
+                peak_count_mode=PEAK_COUNT_MODE_LABELS[peak_count_mode_label],
+                baseline_orders=selected_baselines,
                 fourier=fourier_enabled,
                 interpolate_nonuniform_fft=allow_fft_interpolation,
+                manual_peak_centers=manual_peak_centers,
             ),
         )
     except (TypeError, ValueError) as error:
@@ -350,13 +386,16 @@ def main() -> None:
                 label=label,
                 state="complete" if event.phase == "completion" else "running",
             )
+            with fit_status:
+                st.write(label)
 
         try:
             config = AutofitConfig(
                 max_peaks=max_peaks,
+                peak_count_mode=PEAK_COUNT_MODE_LABELS[peak_count_mode_label],
                 search_mode=SEARCH_MODE_LABELS[search_mode_label],
                 shapes=tuple(SHAPE_LABELS[label] for label in selected_shapes),
-                baseline_orders=tuple(selected_baselines),
+                baseline_orders=selected_baselines,
                 fourier=fourier_enabled,
                 interpolate_nonuniform_fft=allow_fft_interpolation,
                 uncertainty=uncertainty_mode,
@@ -364,6 +403,7 @@ def main() -> None:
                 random_seed=random_seed,
                 workers=workers,
                 allow_broad_multimax_component=allow_broad_multimax_component,
+                manual_peak_centers=manual_peak_centers,
                 measurement_context=_measurement_context(
                     temperature_enabled=temperature_enabled,
                     temperature_value=temperature_value,
@@ -403,36 +443,42 @@ def _render_result(result: FitResult) -> None:
     model = result.best_model
     st.markdown("### 05 · Inspect and export")
     st.subheader(
-        f"Recommended model · {model.peak_count} {model.shape.title()} "
+        f"Recommended fit · {model.peak_count} {model.shape.title()} "
         f"{'peak' if model.peak_count == 1 else 'peaks'}"
     )
-    metrics = st.columns(4)
-    metrics[0].metric("BIC", f"{model.bic:.2f}")
-    metrics[1].metric("AICc", f"{model.aicc:.2f}")
-    metrics[2].metric("RMSE", f"{model.rmse:.4g}")
-    metrics[3].metric("Seed", str(result.settings.random_seed))
+    peak_table = result.to_peak_table()
+    metrics = st.columns(5)
+    metrics[0].metric("Peaks", str(model.peak_count))
+    metrics[1].metric("Tallest peak", f"{peak_table['height'].max():.4g}")
+    metrics[2].metric("Median FWHM", f"{peak_table['width_fwhm'].median():.4g}")
+    metrics[3].metric("Peak mode", result.settings.peak_count_mode)
+    metrics[4].metric("Seed", str(result.settings.random_seed))
     method = "Covariance" if result.uncertainty.method == "covariance" else "Bootstrap"
     st.caption(f"{method} uncertainty · deterministic seed {result.settings.random_seed}")
     for warning in result.warnings:
         st.warning(f"{warning.code}: {warning.message}")
 
-    for name, figure in result.plot().items():
-        st.plotly_chart(figure, width="stretch", key=f"result_{name}")
+    st.subheader("Candidate explorer")
+    selected_model = _selected_candidate_model(result)
+    selected_peak_table = result.to_peak_table(model=selected_model)
+    show_components = st.toggle("Show individual peak curves", value=False, key="show_components")
+    view = st.segmented_control(
+        "Plot view",
+        ("Fit", "Residuals"),
+        default="Fit",
+        key="plot_view",
+    )
+    figures = result.plot(model=selected_model, max_points=2000, show_components=show_components)
+    figure_name = "fit" if view == "Fit" else "residuals"
+    st.plotly_chart(figures[figure_name], width="stretch", key=f"result_{figure_name}")
 
-    st.subheader("Candidate comparison")
-    rows = [
-        {
-            "Shape": score.shape.title(),
-            "Peaks": score.peak_count,
-            "Baseline": score.baseline_order,
-            "Status": score.status,
-            "BIC": score.bic,
-            "ΔBIC": score.delta_bic,
-            "AICc": score.aicc,
-            "Failure": score.failure_code,
-        }
-        for score in result.candidates
-    ]
+    st.subheader("Peak measurements")
+    st.dataframe(selected_peak_table, width="stretch", hide_index=True)
+
+    _render_result_fourier(result)
+
+    st.subheader("Advanced model selection")
+    rows = _candidate_rows(result)
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
     downloads = st.columns(3)
@@ -444,7 +490,7 @@ def _render_result(result: FitResult) -> None:
     )
     downloads[1].download_button(
         "Download peak table CSV",
-        result.to_dataframe().to_csv(index=False),
+        selected_peak_table.to_csv(index=False),
         file_name="sifter.fit.csv",
         mime="text/csv",
     )
@@ -454,6 +500,116 @@ def _render_result(result: FitResult) -> None:
         file_name="sifter.fit.png",
         mime="image/png",
     )
+
+
+def _render_result_fourier(result: FitResult) -> None:
+    st.subheader("Fourier diagnostics")
+    if result.fourier is None:
+        st.caption("Fourier diagnostics were disabled for this analysis.")
+        return
+
+    fourier = result.fourier
+    if fourier.frequency.size == 0:
+        st.warning(
+            "Fourier diagnostics unavailable: "
+            f"{fourier.warning_code or 'INSUFFICIENT_FOURIER_RANGE'}"
+        )
+        st.caption(
+            "For nonuniform coordinate grids, enable diagnostic-only interpolation "
+            "in Advanced settings if an FFT preview is acceptable. Fits and model "
+            "scores still use the original observations."
+        )
+        return
+
+    status = "available" if fourier.applicable else "limited"
+    interpolation = "interpolated grid" if fourier.interpolated else "native uniform grid"
+    st.caption(
+        f"Fourier diagnostics {status} · {fourier.window.title()} window · {interpolation}"
+    )
+    if fourier.warning_code is not None:
+        st.warning(f"{fourier.warning_code}: Fourier diagnostics are reported with caution.")
+
+    if fourier.candidate_spacings:
+        st.table(
+            {
+                "Candidate spacings": ", ".join(
+                    f"{spacing:.4g}" for spacing in fourier.candidate_spacings
+                )
+            },
+            border="horizontal",
+            width="content",
+        )
+
+    if fourier.envelope_fits:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Family": fit.family.title(),
+                        "BIC": fit.bic,
+                        "RSS": fit.rss,
+                        "Frequency min": fit.frequency_min,
+                        "Frequency max": fit.frequency_max,
+                    }
+                    for fit in fourier.envelope_fits
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+
+
+def _selected_candidate_model(result: FitResult):
+    if not result.candidate_models:
+        return result.best_model
+    options = {
+        f"#{index + 1} · {model.peak_count} {model.shape} peaks · BIC {model.bic:.3g}": model
+        for index, model in enumerate(result.candidate_models)
+    }
+    label = st.selectbox("Candidate fit", tuple(options), key="candidate_model")
+    return options[label]
+
+
+def _candidate_rows(result: FitResult) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for rank, score in enumerate(result.candidates, start=1):
+        rows.append(
+            {
+                "Rank": rank if score.status == "valid" else None,
+                "Shape": score.shape.title(),
+                "Peaks": score.peak_count,
+                "Status": score.status,
+                "BIC": score.bic,
+                "ΔBIC": score.delta_bic,
+                "AICc": score.aicc,
+                "RMSE": score.rmse,
+                "Warnings": ", ".join(score.warnings),
+                "Failure": score.failure_code,
+            }
+        )
+    return rows
+
+
+def _parse_manual_peak_centers(raw: str) -> tuple[float, ...]:
+    cleaned = raw.strip()
+    if not cleaned:
+        return ()
+    values: list[float] = []
+    for chunk in cleaned.replace(";", ",").split(","):
+        token = chunk.strip()
+        if not token:
+            continue
+        try:
+            values.append(float(token))
+        except ValueError as error:
+            raise ValueError(
+                "Manual peak centers must be comma-separated numbers."
+            ) from error
+    if len(values) >= 10:
+        raise ValueError("Manual peak centers must contain fewer than 10 values.")
+    if len(set(values)) != len(values):
+        raise ValueError("Manual peak centers must be unique.")
+    return tuple(values)
 
 
 def _render_related(history: tuple[FitResult, ...]) -> None:
@@ -653,7 +809,10 @@ def _progress_label(event: ProgressEvent) -> str:
 
 
 def _analysis_error_message(error: Exception) -> str:
-    if isinstance(error, AnalysisError) and error.code == "NO_RANKABLE_CANDIDATE":
+    if isinstance(error, AnalysisError) and error.code in {
+        "NO_RANKABLE_CANDIDATE",
+        "NO_RANKABLE_EXACT_CANDIDATE",
+    }:
         rejection_counts = (
             pd.Series(
                 [
@@ -667,11 +826,18 @@ def _analysis_error_message(error: Exception) -> str:
         common = ", ".join(
             f"{code}: {count}" for code, count in rejection_counts.items()
         )
-        advice = (
-            "No candidate remained rankable after validation. "
-            "If this is a known broad physical band, enable the advanced broad-band "
-            "override; otherwise increase the peak limit or narrow the fitted range."
-        )
+        if error.code == "NO_RANKABLE_EXACT_CANDIDATE":
+            advice = (
+                "No candidate at the forced peak count remained rankable after "
+                "validation. Increase the exact count, switch back to auto mode, "
+                "or narrow the fitted range."
+            )
+        else:
+            advice = (
+                "No candidate remained rankable after validation. Increase the "
+                "peak limit, switch to exact mode for known spectra, or narrow "
+                "the fitted range."
+            )
         return f"{advice} Rejections: {common or 'none'}."
     return str(error)
 

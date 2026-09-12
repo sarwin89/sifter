@@ -6,6 +6,7 @@ from sifter.baseline import fit_polynomial_baseline
 from sifter.config import AutofitConfig, PeakShape
 from sifter.detection import PeakProposal
 from sifter.fourier import FourierDiagnostics
+from sifter.models.bounds import center_bounds, width_upper_bounds
 from sifter.models.specification import ModelSpec, ParameterLayout, PeakStart
 from sifter.spectrum import Spectrum
 
@@ -17,6 +18,14 @@ def build_candidates(
     config: AutofitConfig,
 ) -> tuple[ModelSpec, ...]:
     """Build every eligible simpler count, family, and baseline candidate."""
+    if config.peak_count_mode == "exact":
+        return build_candidates_for_counts(
+            spectrum,
+            proposals,
+            fourier,
+            config,
+            peak_counts=(config.max_peaks,),
+        )
     initial_count = max(1, len(proposals))
     largest_count = min(config.max_peaks, initial_count + 2)
     return build_candidates_for_counts(
@@ -60,6 +69,9 @@ def build_candidates_for_counts(
                         baseline_start=baseline_start,
                         centers=centers,
                         proposal_widths=proposal_widths,
+                        allow_broad_multimax_component=(
+                            config.allow_broad_multimax_component
+                        ),
                     )
                 )
     family_order = {shape: index for index, shape in enumerate(config.shapes)}
@@ -87,7 +99,10 @@ def _candidate_centers(
     default_width = span / max(6.0 * peak_count, 12.0)
     spacing = None
     if fourier is not None and fourier.candidate_spacings:
-        spacing = fourier.candidate_spacings[0]
+        candidate_spacing = fourier.candidate_spacings[0]
+        minimum_useful_spacing = max(3.0 * spectrum.grid.median_step, 0.1 * default_width)
+        if candidate_spacing >= minimum_useful_spacing:
+            spacing = candidate_spacing
     fallback_centers = np.linspace(
         spectrum.x[0] + span / (peak_count + 1),
         spectrum.x[-1] - span / (peak_count + 1),
@@ -124,6 +139,7 @@ def _build_spec(
     baseline_start: tuple[float, ...],
     centers: tuple[float, ...],
     proposal_widths: tuple[float, ...],
+    allow_broad_multimax_component: bool,
 ) -> ModelSpec:
     span = float(spectrum.x[-1] - spectrum.x[0])
     minimum_width = spectrum.grid.median_step / 2.0
@@ -131,36 +147,68 @@ def _build_spec(
     total_area = float(np.trapezoid(positive_signal, spectrum.x))
     area_start = max(total_area / peak_count, np.finfo(float).eps)
     area_upper = max(total_area * 10.0, span * float(np.ptp(spectrum.intensity)) * 10.0, 1.0)
+    center_limits = center_bounds(
+        centers,
+        lower_limit=float(spectrum.x[0]),
+        upper_limit=float(spectrum.x[-1]),
+        allow_broad_multimax_component=allow_broad_multimax_component,
+    )
+    width_bounds = width_upper_bounds(
+        shape,
+        centers,
+        span=span,
+        minimum_width=minimum_width,
+        allow_broad_multimax_component=allow_broad_multimax_component,
+    )
     starts: list[PeakStart] = []
-    for center, width in zip(centers, proposal_widths, strict=True):
+    for center, width, (sigma_upper, gamma_upper) in zip(
+        centers,
+        proposal_widths,
+        width_bounds,
+        strict=True,
+    ):
         if shape == "gaussian":
             starts.append(
-                PeakStart(area_start, center, sigma=max(width / 2.354820045, minimum_width))
+                PeakStart(
+                    area_start,
+                    center,
+                    sigma=min(max(width / 2.354820045, minimum_width), sigma_upper or span),
+                )
             )
         elif shape == "lorentzian":
-            starts.append(PeakStart(area_start, center, gamma=max(width / 2.0, minimum_width)))
+            starts.append(
+                PeakStart(
+                    area_start,
+                    center,
+                    gamma=min(max(width / 2.0, minimum_width), gamma_upper or span),
+                )
+            )
         else:
             starts.append(
                 PeakStart(
                     area_start,
                     center,
-                    sigma=max(width / 2.354820045, minimum_width),
-                    gamma=max(width / 4.0, minimum_width),
+                    sigma=min(max(width / 2.354820045, minimum_width), sigma_upper or span),
+                    gamma=min(max(width / 4.0, minimum_width), gamma_upper or span),
                 )
             )
 
     coefficient_bound = max(float(np.max(np.abs(spectrum.intensity))) * 100.0, 1.0)
     lower = [-coefficient_bound] * (baseline_order + 1)
     upper = [coefficient_bound] * (baseline_order + 1)
-    for _ in range(peak_count):
-        lower.extend((0.0, float(spectrum.x[0])))
-        upper.extend((area_upper, float(spectrum.x[-1])))
+    for (center_lower, center_upper), (sigma_upper, gamma_upper) in zip(
+        center_limits,
+        width_bounds,
+        strict=True,
+    ):
+        lower.extend((0.0, center_lower))
+        upper.extend((area_upper, center_upper))
         if shape in {"gaussian", "voigt"}:
             lower.append(minimum_width)
-            upper.append(span)
+            upper.append(sigma_upper or span)
         if shape in {"lorentzian", "voigt"}:
             lower.append(minimum_width)
-            upper.append(span)
+            upper.append(gamma_upper or span)
     layout = ParameterLayout(shape, peak_count, baseline_order)
     if len(lower) != layout.parameter_count:
         raise RuntimeError("candidate bounds do not match parameter layout")

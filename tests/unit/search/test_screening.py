@@ -38,7 +38,7 @@ def test_finalist_retention_covers_model_dimensions_before_filling_by_score() ->
     config = AutofitConfig(
         max_peaks=3,
         shapes=("gaussian", "lorentzian"),
-        baseline_orders=(0, 1),
+        baseline_orders=(0,),
         fourier=False,
     )
     specs = build_candidates_for_counts(
@@ -67,13 +67,52 @@ def test_finalist_retention_covers_model_dimensions_before_filling_by_score() ->
         for index, spec in enumerate(specs)
     )
 
-    finalists = retain_diverse_finalists(records, limit=6)
+    finalists = retain_diverse_finalists(records, limit=5)
 
-    assert len(finalists) == 6
+    assert len(finalists) == 5
     assert finalists[0].spec == specs[0]
     assert {record.spec.peak_count for record in finalists} == {1, 2, 3}
     assert {record.spec.shape for record in finalists} == {"gaussian", "lorentzian"}
-    assert {record.spec.baseline_order for record in finalists} == {0, 1}
+    assert {record.spec.baseline_order for record in finalists} == {0}
+
+
+def test_finalist_retention_prunes_decisively_worse_screening_rows() -> None:
+    spectrum = easy_one_peak_spectrum()
+    config = AutofitConfig(
+        max_peaks=3,
+        shapes=("gaussian",),
+        baseline_orders=(0,),
+        fourier=False,
+    )
+    specs = build_candidates_for_counts(
+        spectrum,
+        (),
+        None,
+        config,
+        peak_counts=(1, 2, 3),
+    )
+    records = tuple(
+        ScreeningRecord(
+            spec=spec,
+            status="converged",
+            screening_bic=bic,
+            parameters=ParameterLayout(
+                spec.shape,
+                spec.peak_count,
+                spec.baseline_order,
+            ).initial_vector(spec),
+            attempted_starts=1,
+            converged_starts=1,
+            total_evaluations=3,
+            elapsed_seconds=0.01,
+            failure_code=None,
+        )
+        for spec, bic in zip(specs, (100.0, 500.0, 120.0), strict=True)
+    )
+
+    finalists = retain_diverse_finalists(records, limit=3)
+
+    assert [record.screening_bic for record in finalists] == [100.0, 120.0]
 
 
 def test_failed_screening_rows_are_never_selected_as_finalists() -> None:

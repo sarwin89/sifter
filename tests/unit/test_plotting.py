@@ -28,3 +28,27 @@ def test_plot_contains_data_fit_components_residuals_and_fourier() -> None:
     assert all(figure.layout.paper_bgcolor == "#fbfaf5" for figure in figures.values())
     assert all(figure.layout.font.color == "#17231f" for figure in figures.values())
     assert render_fit_png(result).startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_plot_downsamples_display_traces_without_mutating_result_arrays() -> None:
+    result = autofit(
+        easy_one_peak_spectrum(),
+        config=AutofitConfig(
+            max_peaks=1,
+            shapes=("gaussian",),
+            baseline_orders=(0,),
+            fourier=False,
+        ),
+    )
+    original_points = result.x.size
+
+    figures = result.plot(max_points=100, show_components=False)
+
+    assert result.x.size == original_points
+    assert len(figures["fit"].data[0].x) <= 100
+    assert len(figures["fit"].data[1].x) <= 100
+    assert {trace.name for trace in figures["fit"].data} == {
+        "Observed",
+        "Recommended fit",
+        "Baseline",
+    }

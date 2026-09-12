@@ -29,6 +29,32 @@ def test_autofit_returns_versioned_reproducible_result() -> None:
     assert np.array_equal(first.best_model.parameters, second.best_model.parameters)
 
 
+def test_autofit_retains_top_candidate_models_for_visual_selection() -> None:
+    spectrum, _ = easy_two_peak_spectrum(seed=11)
+    result = autofit(
+        spectrum,
+        config=AutofitConfig(
+            max_peaks=2,
+            shapes=("gaussian", "lorentzian"),
+            baseline_orders=(0,),
+            fourier=False,
+            random_seed=17,
+        ),
+    )
+
+    assert 1 <= len(result.candidate_models) <= 10
+    assert result.candidate_models[0].shape == result.best_model.shape
+    assert result.candidate_models[0].peak_count == result.best_model.peak_count
+    np.testing.assert_allclose(
+        result.candidate_models[0].parameters,
+        result.best_model.parameters,
+    )
+    assert all(
+        model.aicc is not None and model.bic is not None
+        for model in result.candidate_models
+    )
+
+
 def test_fourier_can_be_disabled_and_nonuniform_fft_fails_closed() -> None:
     uniform = easy_one_peak_spectrum()
     disabled = autofit(
@@ -85,6 +111,26 @@ def test_config_selects_covariance_or_bootstrap_uncertainty() -> None:
     assert covariance.uncertainty.method == "covariance"
     assert bootstrap.uncertainty.method == "bootstrap"
     assert bootstrap.uncertainty.successful_bootstraps == 100
+
+
+def test_exact_peak_count_mode_returns_only_requested_count() -> None:
+    spectrum, _ = easy_two_peak_spectrum(seed=16)
+
+    result = autofit(
+        spectrum,
+        config=AutofitConfig(
+            max_peaks=1,
+            peak_count_mode="exact",
+            shapes=("gaussian",),
+            baseline_orders=(0,),
+            fourier=False,
+            random_seed=77,
+        ),
+    )
+
+    assert result.settings.peak_count_mode == "exact"
+    assert result.best_model.peak_count == 1
+    assert {score.peak_count for score in result.candidates} == {1}
 
 
 def test_measurement_context_alone_does_not_change_single_spectrum_fit() -> None:

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from sifter.baseline import asls_baseline
+from sifter.baseline import asls_baseline, fit_polynomial_baseline
 from sifter.config import AutofitConfig
 from sifter.detection import PeakProposal, detect_peak_proposals
 from sifter.fourier import FourierDiagnostics, analyze_fourier
@@ -36,7 +36,7 @@ class SearchPreprocessing:
 
 def preprocess_spectrum(spectrum: Spectrum, config: AutofitConfig) -> SearchPreprocessing:
     """Compute reusable search evidence once for one analysis."""
-    baseline = _frozen(asls_baseline(spectrum.intensity))
+    baseline = _frozen(_proposal_baseline(spectrum, config))
     adjusted = _frozen(spectrum.intensity - baseline)
     proposal_spectrum = Spectrum(
         spectrum.x,
@@ -47,7 +47,11 @@ def preprocess_spectrum(spectrum: Spectrum, config: AutofitConfig) -> SearchPrep
         intensity_name=spectrum.intensity_name,
         metadata=spectrum.metadata,
     )
-    proposals = detect_peak_proposals(proposal_spectrum, max_peaks=config.max_peaks)
+    proposals = _merge_manual_peak_centers(
+        detect_peak_proposals(proposal_spectrum, max_peaks=config.max_peaks),
+        proposal_spectrum,
+        config,
+    )
     detection = PeakDetectionSummary(
         detected_count=len(proposals),
         centers=tuple(proposal.center for proposal in proposals),
@@ -81,3 +85,52 @@ def _frozen(values: NDArray[np.float64]) -> NDArray[np.float64]:
     copied = np.array(values, dtype=np.float64, copy=True)
     copied.setflags(write=False)
     return copied
+
+
+def _proposal_baseline(spectrum: Spectrum, config: AutofitConfig) -> NDArray[np.float64]:
+    if len(config.baseline_orders) == 1:
+        return fit_polynomial_baseline(spectrum, order=config.baseline_orders[0]).evaluate(
+            spectrum.x
+        )
+    return asls_baseline(spectrum.intensity)
+
+
+def _merge_manual_peak_centers(
+    proposals: tuple[PeakProposal, ...],
+    proposal_spectrum: Spectrum,
+    config: AutofitConfig,
+) -> tuple[PeakProposal, ...]:
+    if not config.manual_peak_centers:
+        return proposals
+    lower = float(proposal_spectrum.x[0])
+    upper = float(proposal_spectrum.x[-1])
+    out_of_range = [
+        center for center in config.manual_peak_centers if center < lower or center > upper
+    ]
+    if out_of_range:
+        raise ValueError("manual peak centers must lie inside the spectrum x range")
+    detected_width = (
+        float(np.median([proposal.width for proposal in proposals]))
+        if proposals
+        else max(5.0 * proposal_spectrum.grid.median_step, np.finfo(float).eps)
+    )
+    detected_prominence = max((proposal.prominence for proposal in proposals), default=0.0)
+    manual = tuple(
+        PeakProposal(
+            center=float(center),
+            width=detected_width,
+            prominence=max(
+                float(
+                    np.interp(
+                        center,
+                        proposal_spectrum.x,
+                        proposal_spectrum.intensity,
+                    )
+                ),
+                detected_prominence + np.finfo(float).eps,
+            ),
+            sources=frozenset({"manual"}),
+        )
+        for center in config.manual_peak_centers
+    )
+    return tuple(sorted((*proposals, *manual), key=lambda proposal: proposal.center))

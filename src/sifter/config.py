@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
 if TYPE_CHECKING:
@@ -13,10 +14,11 @@ JSONScalar: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
 PeakShape: TypeAlias = Literal["gaussian", "lorentzian", "voigt"]
 SearchMode: TypeAlias = Literal["fast", "standard", "thorough", "exhaustive"]
+PeakCountMode: TypeAlias = Literal["auto", "exact"]
 UncertaintyMode: TypeAlias = Literal["covariance", "bootstrap"]
 
 SUPPORTED_SHAPES: frozenset[str] = frozenset({"gaussian", "lorentzian", "voigt"})
-SUPPORTED_BASELINE_ORDERS: frozenset[int] = frozenset({0, 1, 2})
+SUPPORTED_BASELINE_ORDERS: frozenset[int] = frozenset({0})
 SUPPORTED_BOOTSTRAP_SAMPLES: frozenset[int] = frozenset({100, 250, 1000})
 FFT_UNIFORMITY_TOLERANCE = 1e-3
 BOUND_PROXIMITY_FRACTION = 1e-6
@@ -32,8 +34,9 @@ class AutofitConfig:
 
     max_peaks: int = 10
     search_mode: SearchMode = "standard"
+    peak_count_mode: PeakCountMode = "auto"
     shapes: tuple[PeakShape, ...] = ("gaussian", "lorentzian", "voigt")
-    baseline_orders: tuple[int, ...] = (0, 1, 2)
+    baseline_orders: tuple[int, ...] = (0,)
     fourier: bool = True
     interpolate_nonuniform_fft: bool = False
     uncertainty: UncertaintyMode = "covariance"
@@ -41,6 +44,7 @@ class AutofitConfig:
     random_seed: int = 42
     workers: int = 1
     allow_broad_multimax_component: bool = False
+    manual_peak_centers: tuple[float, ...] = ()
     measurement_context: MeasurementContext | None = None
     reference: FitReference | None = None
 
@@ -49,6 +53,8 @@ class AutofitConfig:
             raise ValueError("max_peaks must be a positive integer")
         if self.search_mode not in {"fast", "standard", "thorough", "exhaustive"}:
             raise ValueError("search_mode must be fast, standard, thorough, or exhaustive")
+        if self.peak_count_mode not in {"auto", "exact"}:
+            raise ValueError("peak_count_mode must be auto or exact")
         if not self.shapes:
             raise ValueError("at least one peak shape is required")
         if len(set(self.shapes)) != len(self.shapes):
@@ -60,8 +66,10 @@ class AutofitConfig:
             raise ValueError("at least one baseline order is required")
         if len(set(self.baseline_orders)) != len(self.baseline_orders):
             raise ValueError("baseline orders must be unique")
-        if not set(self.baseline_orders) <= SUPPORTED_BASELINE_ORDERS:
+        if not set(self.baseline_orders) <= frozenset({0, 1, 2}):
             raise ValueError("baseline orders must be selected from 0, 1, and 2")
+        if self.baseline_orders != (0,):
+            raise ValueError("v0.4 supports constant baseline order 0 only")
         if self.uncertainty not in {"covariance", "bootstrap"}:
             raise ValueError("uncertainty must be 'covariance' or 'bootstrap'")
         if self.bootstrap_samples not in SUPPORTED_BOOTSTRAP_SAMPLES:
@@ -72,6 +80,14 @@ class AutofitConfig:
             raise ValueError("workers must be a positive integer")
         if not isinstance(self.allow_broad_multimax_component, bool):
             raise ValueError("allow_broad_multimax_component must be a boolean")
+        if len(self.manual_peak_centers) >= 10:
+            raise ValueError("manual peak centers must contain fewer than 10 values")
+        if len(set(self.manual_peak_centers)) != len(self.manual_peak_centers):
+            raise ValueError("manual peak centers must be unique")
+        if any(not isfinite(center) for center in self.manual_peak_centers):
+            raise ValueError("manual peak centers must be finite")
+        if self.manual_peak_centers and len(self.manual_peak_centers) > self.max_peaks:
+            raise ValueError("manual peak centers cannot exceed max_peaks")
         if self.measurement_context is not None and not hasattr(
             self.measurement_context, "to_dict"
         ):

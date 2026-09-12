@@ -2,7 +2,9 @@
 
 from sifter.selection.criteria import (
     CandidateScore,
+    ComponentDiagnostic,
     InformationCriteria,
+    component_diagnostics_for_fit,
     rank_candidates,
     score_candidate,
     unweighted_information_criteria,
@@ -10,7 +12,9 @@ from sifter.selection.criteria import (
 
 __all__ = [
     "CandidateScore",
+    "ComponentDiagnostic",
     "InformationCriteria",
+    "component_diagnostics_for_fit",
     "rank_candidates",
     "score_candidate",
     "unweighted_information_criteria",
