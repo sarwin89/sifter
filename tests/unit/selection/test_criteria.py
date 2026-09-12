@@ -95,6 +95,23 @@ def test_budget_exhausted_candidate_cannot_be_scored_as_final_evidence() -> None
     assert row.failure_code == "BUDGET_EXHAUSTED"
 
 
+def test_budget_exhausted_candidate_can_be_scored_only_when_explicitly_allowed() -> None:
+    spectrum = easy_one_peak_spectrum()
+    provisional = replace(
+        _candidate_fit(spectrum, peak_count=1, residual_value=0.01),
+        status="budget_exhausted",
+        converged_starts=0,
+    )
+
+    row = score_candidate(provisional, spectrum, allow_budget_exhausted=True)
+
+    assert row.status == "valid"
+    assert row.rss is not None
+    assert row.bic is not None
+    assert row.failure_code is None
+    assert "FAST_APPROXIMATE_FIT" in row.warnings
+
+
 def test_component_spanning_two_resolved_maxima_is_allowed_with_warning() -> None:
     spectrum, _ = make_spectrum(
         x=np.linspace(-4.0, 4.0, 401),

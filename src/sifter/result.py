@@ -11,7 +11,14 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from sifter.config import JSONScalar, PeakCountMode, PeakShape, SearchMode, UncertaintyMode
+from sifter.config import (
+    FitMode,
+    JSONScalar,
+    PeakCountMode,
+    PeakShape,
+    SearchMode,
+    UncertaintyMode,
+)
 from sifter.context import MeasurementContext
 from sifter.diagnostics import DiagnosticWarning, ResidualDiagnostics
 from sifter.fitting import ParameterUncertainty
@@ -43,6 +50,8 @@ class AnalysisSettings:
     workers: int = 1
     allow_broad_multimax_component: bool = False
     manual_peak_centers: tuple[float, ...] = ()
+    fit_mode: FitMode = "standard"
+    peak_hints: tuple[float, ...] = ()
     measurement_context: MeasurementContext | None = None
     reference: FitReference | None = None
 
@@ -87,7 +96,7 @@ class ModelResult:
 class FitResult:
     """Stable, versioned output of the public analysis API."""
 
-    schema_version: Literal["sifter.fit_result.v1", "sifter.fit_result.v2"]
+    schema_version: Literal["sifter.fit_result.v1", "sifter.fit_result.v2", "sifter.fit_result.v3"]
     settings: AnalysisSettings
     source_metadata: Mapping[str, JSONScalar]
     x: NDArray[np.float64]
@@ -213,6 +222,8 @@ class FitResult:
                     self.settings.allow_broad_multimax_component
                 ),
                 "manual_peak_centers": self.settings.manual_peak_centers,
+                "fit_mode": self.settings.fit_mode,
+                "peak_hints": self.settings.peak_hints,
                 "measurement_context": (
                     None
                     if self.settings.measurement_context is None
@@ -245,7 +256,7 @@ class FitResult:
             "uncertainty": _uncertainty_dict(self.uncertainty),
             "warnings": [_warning_dict(warning) for warning in self.warnings],
         }
-        if self.schema_version == "sifter.fit_result.v2":
+        if self.schema_version in {"sifter.fit_result.v2", "sifter.fit_result.v3"}:
             payload["measurement_context"] = (
                 None
                 if self.measurement_context is None

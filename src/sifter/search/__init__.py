@@ -7,6 +7,11 @@ from sifter.search.adaptive import (
     adaptive_screening,
 )
 from sifter.search.counts import initial_peak_counts
+from sifter.search.dictionary import (
+    DictionaryPeak,
+    DictionaryScreeningResult,
+    screen_peak_dictionary,
+)
 from sifter.search.policy import SearchPolicy, search_policy
 from sifter.search.preprocessing import (
     PeakDetectionSummary,
@@ -31,6 +36,8 @@ from sifter.search.windowing import (
 __all__ = [
     "PeakDetectionSummary",
     "AdaptiveScreeningResult",
+    "DictionaryPeak",
+    "DictionaryScreeningResult",
     "ExpansionStopReason",
     "SearchMode",
     "SearchPolicy",
@@ -48,5 +55,6 @@ __all__ = [
     "screen_candidates",
     "screening_failures",
     "search_policy",
+    "screen_peak_dictionary",
     "plan_peak_windows",
 ]
