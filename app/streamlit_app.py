@@ -1,32 +1,21 @@
-"""SIFTER's local-only Streamlit adapter."""
+"""Local Streamlit workbench for SIFTER v0.4.2."""
 
 from __future__ import annotations
 
-import os
+from typing import Any, cast
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
-from sifter import (
-    AnalysisError,
-    AutofitConfig,
-    FitResult,
-    MeasurementContext,
-    ProgressEvent,
-    SpectrumPreview,
-    autofit,
-    preview_spectrum,
-    summarize_related_spectra,
-)
-from sifter.io import DelimiterOption, HeaderMode, load_spectrum, preview_table
+from sifter import FitConfig, FitResult, ModelResult, ProgressEvent, Spectrum, fit_spectrum
+from sifter.config import CountMode, FitMode, PeakShape
+from sifter.io import HeaderMode, load_spectrum, preview_table
 from sifter.plotting import render_fit_png
+from sifter.progress import ProgressPhase
+from sifter.workbench import DetectedMaximum, SpectrumInspection, inspect_spectrum
 
-SHAPE_LABELS = {
-    "Gaussian": "gaussian",
-    "Lorentzian": "lorentzian",
-    "Voigt": "voigt",
-}
-DELIMITER_LABELS: dict[str, DelimiterOption] = {
+DELIMITER_LABELS = {
     "Auto": "auto",
     "Tab": "\t",
     "Comma": ",",
@@ -38,874 +27,610 @@ HEADER_LABELS: dict[str, HeaderMode] = {
     "Present": "present",
     "Absent": "absent",
 }
-SEARCH_MODE_LABELS = {
+SHAPE_LABELS = {"Gaussian": "gaussian", "Lorentzian": "lorentzian", "Voigt": "voigt"}
+COUNT_MODE_LABELS = {"Auto": "auto", "Exact": "exact"}
+FIT_MODE_LABELS = {
     "Fast": "fast",
     "Standard": "standard",
     "Thorough": "thorough",
-    "Exhaustive": "exhaustive",
+    "Research": "research",
 }
-PEAK_COUNT_MODE_LABELS = {
-    "Auto up to maximum": "auto",
-    "Force exact number": "exact",
-}
-PHASE_LABELS = {
+PHASE_LABELS: dict[ProgressPhase, str] = {
     "preprocessing": "Preparing spectrum",
     "screening": "Screening candidate models",
-    "expansion": "Expanding the peak-count search",
-    "refinement": "Refining finalists on the full spectrum",
+    "expansion": "Expanding candidate counts",
+    "refinement": "Refining finalists",
     "final_fitting": "Fitting candidate models",
     "uncertainty": "Estimating uncertainty",
-    "completion": "Analysis complete",
+    "completion": "Completed",
 }
+
+_PEAK_PICKER = (
+    st.components.v2.component(
+        "sifter_peak_picker",
+        html="""
+<div class="picker">
+  <svg class="plot" viewBox="0 0 900 280" preserveAspectRatio="none"></svg>
+  <div class="hint">Click to add a peak hint. Click near an existing hint to remove it.</div>
+</div>
+""",
+        css="""
+.picker {
+  border: 1px solid var(--st-border-color);
+  border-radius: var(--st-base-radius);
+  background: var(--st-secondary-background-color);
+  padding: 10px;
+}
+.plot {
+  width: 100%;
+  height: 280px;
+  background: var(--st-background-color);
+  border-radius: var(--st-base-radius);
+  touch-action: manipulation;
+}
+.hint {
+  color: var(--st-text-color);
+  font: 12px var(--st-font);
+  opacity: 0.75;
+  margin-top: 6px;
+}
+""",
+        js="""
+export default function(component) {
+  const { data, parentElement, setStateValue } = component
+  const svg = parentElement.querySelector("svg.plot")
+  if (!svg || !data) return
+  const width = 900
+  const height = 280
+  const pad = 18
+  const x = data.x || []
+  const y = data.y || []
+  const maxima = data.maxima || []
+  let hints = Array.isArray(data.hints) ? [...data.hints] : []
+  if (x.length < 2 || y.length < 2) return
+  const xmin = Math.min(...x)
+  const xmax = Math.max(...x)
+  const ymin = Math.min(...y)
+  const ymax = Math.max(...y)
+  const xscale = value =>
+    pad + (value - xmin) / Math.max(xmax - xmin, 1e-12) * (width - 2 * pad)
+  const yscale = value =>
+    height - pad - (value - ymin) / Math.max(ymax - ymin, 1e-12) * (height - 2 * pad)
+  const points = x.map((value, index) =>
+    `${xscale(value).toFixed(2)},${yscale(y[index]).toFixed(2)}`
+  ).join(" ")
+  const verticalLine = (value, color, width, opacity = 1) =>
+    `<line x1="${xscale(value)}" x2="${xscale(value)}" y1="${pad}" ` +
+    `y2="${height - pad}" stroke="${color}" stroke-width="${width}" ` +
+    `opacity="${opacity}" />`
+  const maximaLines = maxima.map(value =>
+    verticalLine(value, "var(--st-orange-color)", "1.2", "0.65")
+  ).join("")
+  const hintLines = hints.map(value =>
+    verticalLine(value, "var(--st-primary-color)", "2.4")
+  ).join("")
+  svg.innerHTML = `
+    <polyline points="${points}" fill="none" stroke="var(--st-text-color)"
+      stroke-width="1.4" opacity="0.82" />
+    ${maximaLines}
+    ${hintLines}
+  `
+  svg.onclick = event => {
+    const rect = svg.getBoundingClientRect()
+    const px = (event.clientX - rect.left) / Math.max(rect.width, 1) * width
+    const value = xmin + (px - pad) / Math.max(width - 2 * pad, 1) * (xmax - xmin)
+    const tolerance = (xmax - xmin) * 0.01
+    const existing = hints.findIndex(item => Math.abs(item - value) <= tolerance)
+    if (existing >= 0) {
+      hints.splice(existing, 1)
+    } else if (hints.length < data.maxHints) {
+      hints.push(value)
+    }
+    hints = [...new Set(hints.map(item => Number(item.toFixed(8))))].sort((a, b) => a - b)
+    setStateValue("hints", hints)
+  }
+}
+""",
+    )
+    if hasattr(st, "components") and hasattr(st.components, "v2")
+    else None
+)
 
 
 def main() -> None:
-    st.set_page_config(page_title="SIFTER", page_icon="◌", layout="wide")
-    st.session_state.setdefault("fit_history", [])
-    _styles()
-    st.markdown('<p class="eyebrow">LOCAL SPECTRAL INFERENCE</p>', unsafe_allow_html=True)
-    st.title("SIFTER")
-    st.markdown(
-        '<p class="lede">Decompose one-dimensional spectra with conservative model '
-        "comparison and Fourier-assisted diagnostics.</p>",
-        unsafe_allow_html=True,
-    )
+    st.set_page_config(page_title="SIFTER", page_icon=":material/query_stats:", layout="wide")
+    st.title("SIFTER — Fast peak workbench", icon=":material/query_stats:")
+    st.caption("v0.4.2 research-grade local fitting · fast preview · exact final refinement")
     st.info("Your spectrum stays on this machine. SIFTER sends no data or telemetry.")
+    st.session_state.setdefault("fit_history", [])
 
-    st.markdown("### 01 · Load spectrum")
     uploaded = st.file_uploader(
-        "Choose a CSV, TXT, or DAT file",
-        type=["csv", "txt", "dat"],
-        help="Comma, tab, semicolon, and whitespace separators are detected locally.",
+        "Load spectrum",
+        type=("csv", "txt", "tsv", "dat"),
+        help=(
+            "Use a two-column or three-column local table. "
+            "Tab, comma, semicolon, and whitespace are supported."
+        ),
     )
     if uploaded is None:
-        st.caption("Start with a table containing one coordinate column and one intensity column.")
+        st.caption("Start by loading a table with an x-axis column and an intensity column.")
         return
 
-    with st.expander("Import options", expanded=False):
-        import_columns = st.columns(3)
-        with import_columns[0]:
-            delimiter_label = st.selectbox(
-                "Delimiter",
-                tuple(DELIMITER_LABELS),
-                key="input_delimiter",
-                help="Use an explicit delimiter if automatic detection reports malformed rows.",
-            )
-        with import_columns[1]:
-            header_label = st.selectbox(
-                "Header",
-                tuple(HEADER_LABELS),
-                key="input_header",
-            )
-        with import_columns[2]:
-            skip_rows = int(
-                st.number_input(
-                    "Leading rows to skip",
-                    min_value=0,
-                    value=0,
-                    step=1,
-                    key="input_skip_rows",
-                    help="Skip instrument titles or metadata lines before the table header.",
-                )
-            )
-    delimiter = DELIMITER_LABELS[delimiter_label]
-    header = HEADER_LABELS[header_label]
-
+    payload = uploaded.getvalue()
+    import_settings = _import_settings()
     try:
-        preview = preview_table(
-            uploaded,
-            delimiter=delimiter,
-            header=header,
-            skip_rows=skip_rows,
-        )
-    except (TypeError, ValueError) as error:
+        preview = preview_table(payload, **import_settings)
+    except ValueError as error:
         st.error(f"SIFTER could not preview this table. {error}")
         return
-    for warning in preview.warnings:
-        st.warning(f"{warning}: Confirm the inferred columns before analysis.")
-    delimiter_name = "whitespace" if preview.delimiter == "whitespace" else repr(preview.delimiter)
-    st.caption(
-        f"Detected {len(preview.columns)} columns · delimiter {delimiter_name} · "
-        f"header {'present' if preview.has_header else 'absent'}"
-    )
-    st.dataframe(
-        pd.DataFrame(preview.rows[:8], columns=preview.columns),
-        width="stretch",
-        hide_index=True,
-    )
 
-    st.markdown("### 02 · Map columns")
-    mapping_columns = st.columns(3)
-    with mapping_columns[0]:
-        x_column = st.selectbox("Coordinate", preview.columns, key="x_column")
-    with mapping_columns[1]:
-        intensity_default = min(1, len(preview.columns) - 1)
-        intensity_column = st.selectbox(
-            "Intensity",
-            preview.columns,
-            index=intensity_default,
-            key="intensity_column",
-        )
-    with mapping_columns[2]:
-        sigma_choice = st.selectbox(
-            "Standard deviation (optional)",
-            ("None",) + preview.columns,
-            key="sigma_column",
-        )
+    st.subheader("1 · Check imported table")
+    st.dataframe(pd.DataFrame(preview.rows, columns=preview.columns).head(12), hide_index=True)
+    if preview.warnings:
+        st.warning(", ".join(preview.warnings))
 
-    st.markdown("### 03 · Configure analysis")
-    with st.form("analysis_settings"):
-        controls = st.columns((1, 1, 1, 2, 1))
-        with controls[0]:
-            max_peaks = int(
-                st.number_input(
-                    "Maximum peaks",
-                    min_value=1,
-                    max_value=10,
-                    value=10,
-                    step=1,
-                    key="max_peaks",
-                )
-            )
-        with controls[1]:
-            peak_count_mode_label = st.selectbox(
-                "Peak count mode",
-                tuple(PEAK_COUNT_MODE_LABELS),
-                key="peak_count_mode",
-                help=(
-                    "Auto lets BIC/AICc choose any count up to the limit. "
-                    "Exact fits only the selected count."
-                ),
-            )
-        with controls[2]:
-            search_mode_label = st.selectbox(
-                "Search mode",
-                tuple(SEARCH_MODE_LABELS),
-                index=1,
-                key="search_mode",
-                help="Standard screens a detector-centered search; Exhaustive fits every count.",
-            )
-        with controls[3]:
-            selected_shapes = st.multiselect(
-                "Peak shapes",
-                tuple(SHAPE_LABELS),
-                default=tuple(SHAPE_LABELS),
-                key="shapes",
-            )
-        with controls[4]:
-            fourier_enabled = st.checkbox(
-                "Fourier assistance",
-                value=True,
-                key="fourier_enabled",
-            )
-        manual_peak_centers_text = st.text_input(
-            "Manual peak centers",
-            value="",
-            key="manual_peak_centers",
-            help=(
-                "Optional comma-separated x positions to seed additional peaks. "
-                "These are hints, not forced truths."
-            ),
-        )
-        selected_baselines = (0,)
-        allow_fft_interpolation = False
-        uncertainty_mode = "covariance"
-        bootstrap_samples = 250
-        random_seed = 42
-        workers = 1
-        allow_broad_multimax_component = False
-        temperature_enabled = False
-        temperature_value = 300.0
-        temperature_unit = "K"
-        laser_enabled = False
-        laser_power = 1.0
-        laser_power_unit = "mW"
-        condition_name = ""
-        condition_value = ""
-        with st.expander("Advanced settings", expanded=False):
-            st.caption("Baseline is fixed to a constant offset in v0.4.")
-            allow_fft_interpolation = st.checkbox(
-                "Allow diagnostic-only interpolation for nonuniform grids",
-                value=False,
-                key="allow_fft_interpolation",
-            )
-            uncertainty_label = st.selectbox(
-                "Uncertainty method",
-                ("Covariance (fast)", "Bootstrap (thorough)"),
-                key="uncertainty_mode",
-            )
-            uncertainty_mode = (
-                "bootstrap" if uncertainty_label.startswith("Bootstrap") else "covariance"
-            )
-            bootstrap_samples = int(st.selectbox("Bootstrap fits", (100, 250, 1000), index=1))
-            random_seed = int(
-                st.number_input(
-                    "Random seed",
-                    min_value=0,
-                    value=42,
-                    step=1,
-                    key="random_seed",
-                )
-            )
-            workers = int(
-                st.number_input(
-                    "Process workers",
-                    min_value=1,
-                    max_value=max(1, min(8, os.cpu_count() or 1)),
-                    value=1,
-                    step=1,
-                    key="workers",
-                    help="Parallelizes independent candidate models with deterministic seeds.",
-                )
-            )
-            allow_broad_multimax_component = st.checkbox(
-                "Record known shoulder or two-maxima broad band",
-                value=False,
-                key="allow_broad_multimax_component",
-                help=(
-                    "Records an explicit interpretation when a component spans "
-                    "two resolved maxima. Components spanning more than two "
-                    "maxima remain inadmissible."
-                ),
-            )
-            st.markdown("Measurement context")
-            context_columns = st.columns(2)
-            with context_columns[0]:
-                temperature_enabled = st.checkbox(
-                    "Record temperature",
-                    value=False,
-                    key="record_temperature",
-                )
-                temperature_value = float(
-                    st.number_input(
-                        "Temperature",
-                        value=300.0,
-                        step=1.0,
-                        key="temperature_value",
-                    )
-                )
-                temperature_unit = st.selectbox(
-                    "Temperature unit",
-                    ("K", "C"),
-                    key="temperature_unit",
-                )
-            with context_columns[1]:
-                laser_enabled = st.checkbox(
-                    "Record laser power",
-                    value=False,
-                    key="record_laser_power",
-                )
-                laser_power = float(
-                    st.number_input(
-                        "Laser power",
-                        min_value=0.0,
-                        value=1.0,
-                        step=0.1,
-                        key="laser_power_value",
-                    )
-                )
-                laser_power_unit = st.selectbox(
-                    "Laser power unit",
-                    ("nW", "uW", "microW", "mW", "W"),
-                    index=3,
-                    key="laser_power_unit",
-                )
-            generic_columns = st.columns(2)
-            with generic_columns[0]:
-                condition_name = st.text_input(
-                    "Condition name",
-                    key="condition_name",
-                    help="Optional label such as sample, polarization, or acquisition series.",
-                )
-            with generic_columns[1]:
-                condition_value = st.text_input(
-                    "Condition value",
-                    key="condition_value",
-                )
-        estimated_candidates = max_peaks * len(selected_shapes)
-        mode_text = (
-            f"exactly {max_peaks} peak(s)"
-            if PEAK_COUNT_MODE_LABELS[peak_count_mode_label] == "exact"
-            else f"up to {max_peaks} peak(s)"
-        )
-        st.caption(
-            f"Search target: {mode_text} · ceiling estimate {estimated_candidates} "
-            f"candidate fits · constant baseline · seed {random_seed}"
-        )
-        if uncertainty_mode == "bootstrap":
-            st.warning(
-                f"Thorough uncertainty adds {bootstrap_samples} refits after model selection."
-            )
-        submitted = st.form_submit_button(
-            "Analyze spectrum",
-            type="primary",
-            key="analyze",
-            disabled=not selected_shapes,
-        )
-
-    try:
-        manual_peak_centers = _parse_manual_peak_centers(manual_peak_centers_text)
-    except ValueError as error:
-        st.error(str(error))
+    spectrum = _mapped_spectrum(payload, preview.columns, import_settings)
+    if spectrum is None:
         return
 
-    try:
-        spectrum = load_spectrum(
-            uploaded,
-            x_column=x_column,
-            intensity_column=intensity_column,
-            sigma_column=None if sigma_choice == "None" else sigma_choice,
-            delimiter=delimiter,
-            header=header,
-            skip_rows=skip_rows,
+    max_peaks = int(
+        st.number_input(
+            "Maximum peaks",
+            min_value=1,
+            max_value=10,
+            value=10,
+            key="max_peaks",
         )
-        spectrum_preview = preview_spectrum(
-            spectrum,
-            config=AutofitConfig(
-                max_peaks=max_peaks,
-                peak_count_mode=PEAK_COUNT_MODE_LABELS[peak_count_mode_label],
-                baseline_orders=selected_baselines,
-                fourier=fourier_enabled,
-                interpolate_nonuniform_fft=allow_fft_interpolation,
-                manual_peak_centers=manual_peak_centers,
-            ),
-        )
-    except (TypeError, ValueError) as error:
-        st.error(f"SIFTER could not prepare this spectrum. {error}")
-        return
-    _render_preview(spectrum_preview)
+    )
+    inspection = inspect_spectrum(spectrum, max_peaks=max_peaks)
+    peak_hints = _render_inspection(spectrum, inspection, max_peaks=max_peaks)
+    config = _fit_controls(max_peaks=max_peaks, peak_hints=peak_hints)
 
-    if submitted:
-        progress_bar = st.progress(0, text="Preparing analysis…")
-        fit_status = st.status("Preparing analysis…", expanded=False)
-
-        def report_progress(event: ProgressEvent) -> None:
-            label = _progress_label(event)
-            progress_bar.progress(_overall_progress(event), text=label)
-            fit_status.update(
-                label=label,
-                state="complete" if event.phase == "completion" else "running",
-            )
-            with fit_status:
-                st.write(label)
-
-        try:
-            config = AutofitConfig(
-                max_peaks=max_peaks,
-                peak_count_mode=PEAK_COUNT_MODE_LABELS[peak_count_mode_label],
-                search_mode=SEARCH_MODE_LABELS[search_mode_label],
-                shapes=tuple(SHAPE_LABELS[label] for label in selected_shapes),
-                baseline_orders=selected_baselines,
-                fourier=fourier_enabled,
-                interpolate_nonuniform_fft=allow_fft_interpolation,
-                uncertainty=uncertainty_mode,
-                bootstrap_samples=bootstrap_samples,
-                random_seed=random_seed,
-                workers=workers,
-                allow_broad_multimax_component=allow_broad_multimax_component,
-                manual_peak_centers=manual_peak_centers,
-                measurement_context=_measurement_context(
-                    temperature_enabled=temperature_enabled,
-                    temperature_value=temperature_value,
-                    temperature_unit=temperature_unit,
-                    laser_enabled=laser_enabled,
-                    laser_power=laser_power,
-                    laser_power_unit=laser_power_unit,
-                    condition_name=condition_name,
-                    condition_value=condition_value,
-                ),
-            )
-            result = autofit(
-                spectrum,
-                config=config,
-                progress=report_progress,
-            )
-            st.session_state["fit_result"] = result
-            history = st.session_state.setdefault("fit_history", [])
-            history.append(result)
-            st.session_state["fit_history"] = history[-12:]
-        except (AnalysisError, TypeError, ValueError) as error:
-            st.session_state.pop("fit_result", None)
-            fit_status.update(label="Analysis failed", state="error", expanded=True)
-            st.error(f"SIFTER could not complete the analysis. {_analysis_error_message(error)}")
+    if st.button("Run fit", type="primary", icon=":material/play_arrow:", key="analyze"):
+        _run_fit(spectrum, config)
 
     result = st.session_state.get("fit_result")
     if isinstance(result, FitResult):
         _render_result(result)
-    history = tuple(
-        item for item in st.session_state.get("fit_history", ()) if isinstance(item, FitResult)
+
+
+def _import_settings() -> dict[str, Any]:
+    st.subheader("Import options")
+    with st.container(horizontal=True, vertical_alignment="bottom"):
+        delimiter_label = st.selectbox("Delimiter", tuple(DELIMITER_LABELS), key="input_delimiter")
+        header_label = st.selectbox("Header", tuple(HEADER_LABELS), key="input_header")
+        skip_rows = int(
+            st.number_input(
+                "Skip rows",
+                min_value=0,
+                max_value=200,
+                value=0,
+                step=1,
+                key="input_skip_rows",
+            )
+        )
+    return {
+        "delimiter": DELIMITER_LABELS[delimiter_label],
+        "header": HEADER_LABELS[header_label],
+        "skip_rows": skip_rows,
+    }
+
+
+def _mapped_spectrum(
+    payload: bytes,
+    columns: tuple[str, ...],
+    import_settings: dict[str, Any],
+) -> Spectrum | None:
+    st.subheader("2 · Map columns")
+    with st.container(horizontal=True, vertical_alignment="bottom"):
+        x_column = st.selectbox("Coordinate", columns, key="x_column")
+        default_intensity = columns[1] if len(columns) > 1 else columns[0]
+        intensity_column = st.selectbox(
+            "Intensity",
+            columns,
+            index=columns.index(default_intensity),
+            key="intensity_column",
+        )
+        sigma_options = ("None", *columns)
+        sigma_choice = st.selectbox("Uncertainty", sigma_options, key="sigma_column")
+    if x_column == intensity_column:
+        st.error("Coordinate and intensity must be different columns.")
+        return None
+    try:
+        return load_spectrum(
+            payload,
+            x_column=x_column,
+            intensity_column=intensity_column,
+            sigma_column=None if sigma_choice == "None" else sigma_choice,
+            x_name=x_column,
+            intensity_name=intensity_column,
+            **import_settings,
+        )
+    except ValueError as error:
+        st.error(f"SIFTER could not prepare this spectrum. {error}")
+        return None
+
+
+def _render_inspection(
+    spectrum: Spectrum,
+    inspection: SpectrumInspection,
+    *,
+    max_peaks: int,
+) -> tuple[float, ...]:
+    st.subheader("3 · Detected maxima and peak hints")
+    metrics = st.columns(3)
+    metrics[0].metric("Detected maxima", len(inspection.maxima))
+    metrics[1].metric("Data points", spectrum.x.size)
+    metrics[2].metric("Preview time", f"{inspection.elapsed_seconds:.2f}s")
+    st.caption(
+        "Click the spectrum to add peak hints. "
+        "Orange lines are detected maxima; blue lines are your hints."
     )
-    if len(history) >= 2:
-        _render_related(history)
+    hints = _peak_picker(
+        spectrum,
+        inspection.maxima,
+        current_hints=(),
+        max_hints=max_peaks,
+        key="peak_picker",
+    )
+    with st.container(horizontal=True, vertical_alignment="bottom"):
+        manual = st.text_input(
+            "Peak hints",
+            ", ".join(f"{hint:.6g}" for hint in hints),
+            key="manual_peak_hints",
+            help="Optional fallback: comma-separated x-axis peak centers.",
+        )
+        if st.button("Clear hints", icon=":material/close:", key="clear_peak_hints"):
+            st.session_state.pop("peak_picker", None)
+            st.rerun()
+    parsed = _parse_peak_hints(manual)
+    st.dataframe(pd.DataFrame(inspection.to_rows()), hide_index=True)
+    return parsed[:max_peaks]
+
+
+def _peak_picker(
+    spectrum: Spectrum,
+    maxima: tuple[DetectedMaximum, ...],
+    *,
+    current_hints: tuple[float, ...],
+    max_hints: int,
+    key: str,
+) -> tuple[float, ...]:
+    state = st.session_state.get(key, {})
+    if isinstance(state, dict):
+        current_hints = tuple(float(value) for value in state.get("hints", current_hints))
+    if _PEAK_PICKER is None:
+        st.warning("Interactive peak picker is unavailable in this Streamlit build.")
+        return current_hints
+    indices = _display_indices(spectrum.x.size, 1200)
+    result = _PEAK_PICKER(
+        key=key,
+        data={
+            "x": [float(value) for value in spectrum.x[indices]],
+            "y": [float(value) for value in spectrum.intensity[indices]],
+            "maxima": [float(maximum.center) for maximum in maxima],
+            "hints": [float(value) for value in current_hints],
+            "maxHints": max_hints,
+        },
+        on_hints_change=lambda: None,
+    )
+    hints = getattr(result, "hints", None)
+    if hints is None:
+        return current_hints
+    return tuple(float(value) for value in hints)
+
+
+def _fit_controls(*, max_peaks: int, peak_hints: tuple[float, ...]) -> FitConfig:
+    st.subheader("4 · Fit intent")
+    with st.form("fit_controls"):
+        with st.container(horizontal=True, vertical_alignment="bottom"):
+            count_label = st.selectbox("Peak count", tuple(COUNT_MODE_LABELS), key="count_mode")
+            fit_label = st.selectbox("Fit mode", tuple(FIT_MODE_LABELS), key="fit_mode")
+            selected_shapes = st.multiselect(
+                "Line shapes",
+                tuple(SHAPE_LABELS),
+                default=tuple(SHAPE_LABELS),
+                key="shapes",
+            )
+            workers = int(
+                st.number_input(
+                    "Workers",
+                    min_value=1,
+                    max_value=8,
+                    value=1,
+                    key="workers",
+                )
+            )
+        with st.container(horizontal=True, vertical_alignment="bottom"):
+            fourier = st.toggle("Fourier diagnostics", value=True, key="fourier_enabled")
+            allow_fft_interpolation = st.toggle(
+                "Interpolate nonuniform FFT",
+                value=False,
+                key="allow_fft_interpolation",
+            )
+            allow_broad = st.toggle(
+                "Allow shoulder notes",
+                value=False,
+                key="allow_broad_multimax_component",
+                help="Components spanning more than two maxima remain inadmissible.",
+            )
+        submitted = st.form_submit_button("Apply settings", icon=":material/tune:")
+    del submitted
+    if not selected_shapes:
+        selected_shapes = ["Gaussian"]
+    count_mode = cast(CountMode, COUNT_MODE_LABELS[count_label])
+    fit_mode = cast(FitMode, FIT_MODE_LABELS[fit_label])
+    shapes = tuple(cast(PeakShape, SHAPE_LABELS[label]) for label in selected_shapes)
+    if COUNT_MODE_LABELS[count_label] == "exact" and len(peak_hints) > max_peaks:
+        st.error("Exact peak count must be at least the number of peak hints.")
+    return FitConfig(
+        max_peaks=max_peaks,
+        count_mode=count_mode,
+        fit_mode=fit_mode,
+        shapes=shapes,
+        peak_hints=peak_hints,
+        fourier=fourier,
+        interpolate_nonuniform_fft=allow_fft_interpolation,
+        workers=workers,
+        allow_broad_multimax_component=allow_broad,
+    )
+
+
+def _run_fit(spectrum: Spectrum, config: FitConfig) -> None:
+    progress_bar = st.progress(0, text="Preparing analysis…")
+    status = st.status("Fitting spectrum…", expanded=True)
+
+    def report(event: ProgressEvent) -> None:
+        progress_bar.progress(_overall_progress(event), text=_progress_label(event))
+        status.write(_progress_label(event))
+
+    try:
+        with status:
+            result = fit_spectrum(spectrum, config=config, progress=report)
+    except Exception as error:  # noqa: BLE001 - user-facing app boundary
+        st.session_state.pop("fit_result", None)
+        status.update(label="Fit failed", state="error", expanded=True)
+        st.error(f"SIFTER could not complete the analysis. {error}")
+        return
+    st.session_state["fit_result"] = result
+    history = st.session_state.setdefault("fit_history", [])
+    history.append(result)
+    st.session_state["fit_history"] = history[-12:]
+    progress_bar.progress(100, text="Completed")
+    status.update(label="Fit complete", state="complete", expanded=False)
 
 
 def _render_result(result: FitResult) -> None:
-    model = result.best_model
-    st.markdown("### 05 · Inspect and export")
-    st.subheader(
-        f"Recommended fit · {model.peak_count} {model.shape.title()} "
-        f"{'peak' if model.peak_count == 1 else 'peaks'}"
-    )
-    peak_table = result.to_peak_table()
-    metrics = st.columns(5)
-    metrics[0].metric("Peaks", str(model.peak_count))
-    metrics[1].metric("Tallest peak", f"{peak_table['height'].max():.4g}")
-    metrics[2].metric("Median FWHM", f"{peak_table['width_fwhm'].median():.4g}")
-    metrics[3].metric("Peak mode", result.settings.peak_count_mode)
-    metrics[4].metric("Seed", str(result.settings.random_seed))
-    method = "Covariance" if result.uncertainty.method == "covariance" else "Bootstrap"
-    st.caption(f"{method} uncertainty · deterministic seed {result.settings.random_seed}")
-    for warning in result.warnings:
-        st.warning(f"{warning.code}: {warning.message}")
-
-    st.subheader("Candidate explorer")
+    st.subheader("Recommended fit")
     selected_model = _selected_candidate_model(result)
     selected_peak_table = result.to_peak_table(model=selected_model)
-    show_components = st.toggle("Show individual peak curves", value=False, key="show_components")
-    view = st.segmented_control(
-        "Plot view",
-        ("Fit", "Residuals"),
-        default="Fit",
-        key="plot_view",
+    metric_columns = st.columns(4)
+    metric_columns[0].metric("Peaks", selected_model.peak_count)
+    metric_columns[1].metric("Shape", selected_model.shape)
+    metric_columns[2].metric(
+        "Worst local error",
+        _format_error(selected_peak_table["local_area_error"].max()),
     )
-    figures = result.plot(model=selected_model, max_points=2000, show_components=show_components)
-    figure_name = "fit" if view == "Fit" else "residuals"
-    st.plotly_chart(figures[figure_name], width="stretch", key=f"result_{figure_name}")
+    metric_columns[3].metric(
+        "Fit note",
+        ", ".join(sorted(set(selected_peak_table["fit_note"]))),
+    )
+
+    st.subheader("Candidate explorer")
+    view = st.segmented_control(
+        "View",
+        ("Fit", "Residuals", "Fourier", "Advanced"),
+        default="Fit",
+        key="result_view",
+    )
+    show_components = st.toggle("Show individual peak curves", value=False, key="show_components")
+    if view == "Fit":
+        st.line_chart(_fit_chart_frame(result, selected_model, show_components=show_components))
+    elif view == "Residuals":
+        st.line_chart(_residual_frame(result, selected_model))
+    elif view == "Fourier":
+        _render_fourier(result)
+    else:
+        _render_advanced(result)
 
     st.subheader("Peak measurements")
-    st.dataframe(selected_peak_table, width="stretch", hide_index=True)
-
-    _render_result_fourier(result)
+    st.dataframe(selected_peak_table, hide_index=True)
 
     st.subheader("Advanced model selection")
-    rows = _candidate_rows(result)
-    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    st.dataframe(_candidate_frame(result), hide_index=True)
 
-    downloads = st.columns(3)
-    downloads[0].download_button(
-        "Download result JSON",
-        result.to_json(),
-        file_name="sifter.fit.json",
-        mime="application/json",
-    )
-    downloads[1].download_button(
-        "Download peak table CSV",
-        selected_peak_table.to_csv(index=False),
-        file_name="sifter.fit.csv",
-        mime="text/csv",
-    )
-    downloads[2].download_button(
-        "Download fit PNG",
-        render_fit_png(result),
-        file_name="sifter.fit.png",
-        mime="image/png",
-    )
+    _render_exports(result, selected_peak_table)
 
 
-def _render_result_fourier(result: FitResult) -> None:
-    st.subheader("Fourier diagnostics")
-    if result.fourier is None:
-        st.caption("Fourier diagnostics were disabled for this analysis.")
-        return
-
-    fourier = result.fourier
-    if fourier.frequency.size == 0:
-        st.warning(
-            "Fourier diagnostics unavailable: "
-            f"{fourier.warning_code or 'INSUFFICIENT_FOURIER_RANGE'}"
-        )
-        st.caption(
-            "For nonuniform coordinate grids, enable diagnostic-only interpolation "
-            "in Advanced settings if an FFT preview is acceptable. Fits and model "
-            "scores still use the original observations."
-        )
-        return
-
-    status = "available" if fourier.applicable else "limited"
-    interpolation = "interpolated grid" if fourier.interpolated else "native uniform grid"
-    st.caption(
-        f"Fourier diagnostics {status} · {fourier.window.title()} window · {interpolation}"
-    )
-    if fourier.warning_code is not None:
-        st.warning(f"{fourier.warning_code}: Fourier diagnostics are reported with caution.")
-
-    if fourier.candidate_spacings:
-        st.table(
-            {
-                "Candidate spacings": ", ".join(
-                    f"{spacing:.4g}" for spacing in fourier.candidate_spacings
-                )
-            },
-            border="horizontal",
-            width="content",
-        )
-
-    if fourier.envelope_fits:
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Family": fit.family.title(),
-                        "BIC": fit.bic,
-                        "RSS": fit.rss,
-                        "Frequency min": fit.frequency_min,
-                        "Frequency max": fit.frequency_max,
-                    }
-                    for fit in fourier.envelope_fits
-                ]
-            ),
-            width="stretch",
-            hide_index=True,
-        )
-
-
-def _selected_candidate_model(result: FitResult):
+def _selected_candidate_model(result: FitResult) -> ModelResult:
     if not result.candidate_models:
         return result.best_model
     options = {
-        f"#{index + 1} · {model.peak_count} {model.shape} peaks · BIC {model.bic:.3g}": model
+        f"#{index + 1}: {model.peak_count} {model.shape} peaks": model
         for index, model in enumerate(result.candidate_models)
     }
     label = st.selectbox("Candidate fit", tuple(options), key="candidate_model")
     return options[label]
 
 
-def _candidate_rows(result: FitResult) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-    for rank, score in enumerate(result.candidates, start=1):
+def _fit_chart_frame(
+    result: FitResult,
+    model: ModelResult,
+    *,
+    show_components: bool,
+) -> pd.DataFrame:
+    indices = _display_indices(result.x.size, 2000)
+    data: dict[str, np.ndarray] = {
+        result.x_name: result.x[indices],
+        "observed": result.intensity[indices],
+        "fit": model.fitted[indices],
+        "baseline": model.baseline[indices],
+    }
+    if show_components:
+        for index, component in enumerate(model.components, start=1):
+            data[f"peak {index}"] = component[indices] + model.baseline[indices]
+    return pd.DataFrame(data).set_index(result.x_name)
+
+
+def _residual_frame(result: FitResult, model: ModelResult) -> pd.DataFrame:
+    indices = _display_indices(result.x.size, 2000)
+    return pd.DataFrame(
+        {result.x_name: result.x[indices], "residual": model.residuals[indices]}
+    ).set_index(result.x_name)
+
+
+def _candidate_frame(result: FitResult) -> pd.DataFrame:
+    rows = []
+    models = result.candidate_models or (result.best_model,)
+    for index, model in enumerate(models[:10], start=1):
+        peak_table = result.to_peak_table(model=model)
+        notes = [str(note) for note in peak_table["fit_note"]]
+        summary_note = ", ".join(sorted(set(notes))) if notes else "clear"
         rows.append(
             {
-                "Rank": rank if score.status == "valid" else None,
-                "Shape": score.shape.title(),
-                "Peaks": score.peak_count,
-                "Status": score.status,
-                "BIC": score.bic,
-                "ΔBIC": score.delta_bic,
-                "AICc": score.aicc,
-                "RMSE": score.rmse,
-                "Warnings": ", ".join(score.warnings),
-                "Failure": score.failure_code,
+                "rank": index,
+                "peak count": model.peak_count,
+                "shape": model.shape,
+                "worst local error": peak_table["local_area_error"].max(),
+                "note count": sum(note != "clear" for note in notes),
+                "summary note": summary_note,
+                "BIC": model.bic,
+                "AICc": model.aicc,
+                "RMSE": model.rmse,
             }
         )
-    return rows
+    return pd.DataFrame(rows)
 
 
-def _parse_manual_peak_centers(raw: str) -> tuple[float, ...]:
-    cleaned = raw.strip()
-    if not cleaned:
-        return ()
-    values: list[float] = []
-    for chunk in cleaned.replace(";", ",").split(","):
-        token = chunk.strip()
-        if not token:
-            continue
-        try:
-            values.append(float(token))
-        except ValueError as error:
-            raise ValueError(
-                "Manual peak centers must be comma-separated numbers."
-            ) from error
-    if len(values) >= 10:
-        raise ValueError("Manual peak centers must contain fewer than 10 values.")
-    if len(set(values)) != len(values):
-        raise ValueError("Manual peak centers must be unique.")
-    return tuple(values)
-
-
-def _render_related(history: tuple[FitResult, ...]) -> None:
-    st.markdown("### 06 · Related spectra")
-    choices = _related_condition_choices(history)
-    if not choices:
-        st.caption("Record temperature, laser power, or a generic condition to compare spectra.")
+def _render_fourier(result: FitResult) -> None:
+    if result.fourier is None:
+        st.caption("Fourier diagnostics were disabled for this fit.")
         return
-    condition = st.selectbox(
-        "Condition axis",
-        choices,
-        key="related_condition_axis",
-    )
-    table = summarize_related_spectra(history, condition=condition)
-    st.dataframe(table, width="stretch", hide_index=True)
-    if table.empty or table["condition_value"].isna().all():
-        st.caption("No numeric condition values are available for plotting.")
-        return
-    numeric = table.copy()
-    numeric["condition_value"] = pd.to_numeric(numeric["condition_value"], errors="coerce")
-    numeric = numeric.dropna(subset=["condition_value"])
-    if numeric.empty:
-        st.caption("The selected condition is nonnumeric, so only the table is shown.")
-        return
-    for value in ("center", "fwhm", "area"):
-        st.line_chart(
-            numeric,
-            x="condition_value",
-            y=value,
-            color="track_id",
-            x_label=condition.replace("_", " ").title(),
-            y_label=value.upper() if value == "fwhm" else value.title(),
-        )
-
-
-def _related_condition_choices(history: tuple[FitResult, ...]) -> tuple[str, ...]:
-    choices: list[str] = []
-    for result in history:
-        context = result.measurement_context
-        if context is None:
-            continue
-        if context.temperature is not None and "temperature" not in choices:
-            choices.append("temperature")
-        if context.laser_power is not None and "laser_power" not in choices:
-            choices.append("laser_power")
-        if context.conditions is not None:
-            for key in context.conditions:
-                if key not in choices:
-                    choices.append(key)
-    return tuple(choices)
-
-
-def _measurement_context(
-    *,
-    temperature_enabled: bool,
-    temperature_value: float,
-    temperature_unit: str,
-    laser_enabled: bool,
-    laser_power: float,
-    laser_power_unit: str,
-    condition_name: str,
-    condition_value: str,
-) -> MeasurementContext | None:
-    conditions = {}
-    clean_name = condition_name.strip()
-    if clean_name:
-        conditions[clean_name] = condition_value.strip()
-    if not temperature_enabled and not laser_enabled and not conditions:
-        return None
-    return MeasurementContext(
-        temperature=temperature_value if temperature_enabled else None,
-        temperature_unit=temperature_unit if temperature_enabled else None,
-        laser_power=laser_power if laser_enabled else None,
-        laser_power_unit=laser_power_unit if laser_enabled else None,
-        conditions=conditions,
-    )
-
-
-def _render_preview(preview: SpectrumPreview) -> None:
-    st.markdown("### 04 · Pre-fit preview")
-    grid_label = "Uniform FFT grid" if preview.grid_is_uniform else "Nonuniform FFT grid"
-    interpolation_label = (
-        "diagnostic interpolation enabled"
-        if preview.fourier_interpolated
-        else "no diagnostic interpolation"
-    )
-    st.caption(
-        f"{grid_label} · median step {preview.grid_median_step:.4g} "
-        f"{preview.x_unit or preview.x_name} · {interpolation_label}"
-    )
-    real_space = pd.DataFrame(
+    st.table(
         {
-            preview.x_name: preview.x,
-            "Raw intensity": preview.intensity,
-            "Global baseline": preview.baseline,
-            "Baseline-adjusted": preview.adjusted,
+            "Applicable": result.fourier.applicable,
+            "Interpolated": result.fourier.interpolated,
+            "Warning": result.fourier.warning_code or "none",
         }
     )
-    st.line_chart(
-        real_space,
-        x=preview.x_name,
-        y=["Raw intensity", "Global baseline", "Baseline-adjusted"],
-        x_label=(
-            preview.x_name
-            if preview.x_unit is None
-            else f"{preview.x_name} ({preview.x_unit})"
-        ),
-        y_label=preview.intensity_name,
-    )
-    if preview.provisional_centers:
-        proposals = pd.DataFrame(
-            {
-                "Center": preview.provisional_centers,
-                "Width estimate": preview.provisional_widths,
-                "Prominence": preview.provisional_prominences,
-            }
-        )
-        st.dataframe(proposals, width="stretch", hide_index=True)
-    else:
-        st.caption("No provisional centers passed the conservative detector thresholds.")
-
-    if not preview.fourier_enabled:
-        st.caption("Fourier diagnostics are disabled for this analysis.")
-        return
-    if preview.frequency.size == 0:
-        st.warning(
-            f"Fourier preview unavailable: {preview.fourier_warning_code or 'insufficient data'}"
-        )
-        return
-
-    fourier_columns = st.columns(2)
-    magnitude = pd.DataFrame(
-        {"Frequency": preview.frequency, "FFT magnitude": preview.magnitude}
-    )
-    with fourier_columns[0]:
+    if result.fourier.frequency.size:
+        indices = _display_indices(result.fourier.frequency.size, 1200)
         st.line_chart(
-            magnitude,
-            x="Frequency",
-            y="FFT magnitude",
-            x_label=f"Frequency ({preview.frequency_unit})",
-            y_label="Magnitude",
+            pd.DataFrame(
+                {
+                    "frequency": result.fourier.frequency[indices],
+                    "magnitude": result.fourier.magnitude[indices],
+                }
+            ).set_index("frequency")
         )
-    log_data: dict[str, object] = {
-        "Frequency": preview.frequency,
-        "Log magnitude": preview.log_magnitude,
-    }
-    for envelope in preview.envelope_fits:
-        frequency = preview.frequency
-        if envelope.family == "gaussian":
-            tendency = envelope.intercept - envelope.decay_coefficients[0] * frequency**2
-        elif envelope.family == "lorentzian":
-            tendency = envelope.intercept - envelope.decay_coefficients[0] * frequency
-        else:
-            tendency = (
-                envelope.intercept
-                - envelope.decay_coefficients[0] * frequency
-                - envelope.decay_coefficients[1] * frequency**2
-            )
-        log_data[f"{envelope.family.title()} tendency"] = tendency
-    with fourier_columns[1]:
-        st.line_chart(
-            pd.DataFrame(log_data),
-            x="Frequency",
-            y=[column for column in log_data if column != "Frequency"],
-            x_label=f"Frequency ({preview.frequency_unit})",
-            y_label="Log magnitude",
-        )
-    spacings = ", ".join(f"{value:.4g}" for value in preview.candidate_spacings)
-    st.caption(
-        f"{preview.fourier_window.title() if preview.fourier_window else 'No'} window · "
-        f"candidate spacings: {spacings or 'none'} {preview.x_unit or preview.x_name}"
+
+
+def _render_advanced(result: FitResult) -> None:
+    st.table(
+        {
+            "BIC": f"{result.best_model.bic:.4g}",
+            "AICc": f"{result.best_model.aicc:.4g}",
+            "RMSE": f"{result.best_model.rmse:.4g}",
+            "Parameters": result.best_model.parameter_count,
+            "Observations": result.observation_count,
+        }
     )
+    for warning in result.warnings:
+        st.warning(f"{warning.code}: {warning.message}")
+
+
+def _render_exports(result: FitResult, peak_table: pd.DataFrame) -> None:
+    st.subheader("Export")
+    with st.container(horizontal=True):
+        st.download_button(
+            "Peak CSV",
+            peak_table.to_csv(index=False).encode(),
+            file_name="sifter-peaks.csv",
+            mime="text/csv",
+        )
+        st.download_button(
+            "Result JSON",
+            result.to_json().encode(),
+            file_name="sifter-result.json",
+            mime="application/json",
+        )
+        st.download_button(
+            "Fit PNG",
+            render_fit_png(result),
+            file_name="sifter-fit.png",
+            mime="image/png",
+        )
+
+
+def _parse_peak_hints(raw: str) -> tuple[float, ...]:
+    if not raw.strip():
+        return ()
+    values: list[float] = []
+    for item in raw.replace(";", ",").split(","):
+        text = item.strip()
+        if not text:
+            continue
+        try:
+            value = float(text)
+        except ValueError:
+            st.error(f"Peak hint {text!r} is not a number.")
+            continue
+        if value not in values:
+            values.append(value)
+    return tuple(sorted(values))
+
+
+def _display_indices(length: int, max_points: int) -> np.ndarray:
+    if length <= max_points:
+        return np.arange(length)
+    return np.unique(np.linspace(0, length - 1, max_points, dtype=int))
 
 
 def _overall_progress(event: ProgressEvent) -> int:
-    ranges = {
-        "preprocessing": (0, 10),
-        "screening": (10, 45),
-        "expansion": (45, 55),
-        "refinement": (55, 80),
-        "final_fitting": (10, 80),
-        "uncertainty": (80, 98),
-        "completion": (100, 100),
+    phase_offsets = {
+        "preprocessing": 5,
+        "screening": 20,
+        "expansion": 35,
+        "refinement": 55,
+        "final_fitting": 70,
+        "uncertainty": 90,
+        "completion": 100,
     }
-    start, end = ranges[event.phase]
-    fraction = 1.0 if event.total == 0 else event.completed / event.total
-    return round(start + (end - start) * fraction)
+    phase_width = {
+        "preprocessing": 15,
+        "screening": 15,
+        "expansion": 20,
+        "refinement": 15,
+        "final_fitting": 20,
+        "uncertainty": 10,
+        "completion": 0,
+    }
+    if event.total == 0:
+        return phase_offsets[event.phase]
+    return min(
+        100,
+        phase_offsets[event.phase]
+        + int(phase_width[event.phase] * event.completed / event.total),
+    )
 
 
 def _progress_label(event: ProgressEvent) -> str:
     label = PHASE_LABELS[event.phase]
-    if event.total > 0:
+    if event.total:
         label = f"{label} · {event.completed}/{event.total}"
     if event.message:
         label = f"{label} · {event.message}"
     return label
 
 
-def _analysis_error_message(error: Exception) -> str:
-    if isinstance(error, AnalysisError) and error.code in {
-        "NO_RANKABLE_CANDIDATE",
-        "NO_RANKABLE_EXACT_CANDIDATE",
-    }:
-        rejection_counts = (
-            pd.Series(
-                [
-                    score.failure_code or score.status
-                    for score in error.candidate_scores
-                ]
-            )
-            .value_counts()
-            .to_dict()
-        )
-        common = ", ".join(
-            f"{code}: {count}" for code, count in rejection_counts.items()
-        )
-        if error.code == "NO_RANKABLE_EXACT_CANDIDATE":
-            advice = (
-                "No candidate at the forced peak count remained rankable after "
-                "validation. Increase the exact count, switch back to auto mode, "
-                "or narrow the fitted range."
-            )
-        else:
-            advice = (
-                "No candidate remained rankable after validation. Increase the "
-                "peak limit, switch to exact mode for known spectra, or narrow "
-                "the fitted range."
-            )
-        return f"{advice} Rejections: {common or 'none'}."
-    return str(error)
-
-
-def _styles() -> None:
-    st.markdown(
-        """
-        <style>
-        :root {
-          --paper: oklch(96% 0.014 85);
-          --ink: oklch(25% 0.026 165);
-          --mineral: oklch(45% 0.09 165);
-          --line: oklch(81% 0.026 120);
-        }
-        .stApp {
-          background: #f5f2e9;
-          background: var(--paper);
-          color: #17231f;
-          color: var(--ink);
-          font-family: Aptos, "Trebuchet MS", sans-serif;
-        }
-        [data-testid="stMainBlockContainer"] { max-width: 86rem; padding-top: 3rem; }
-        h1, h2, h3 { font-family: Georgia, "Times New Roman", serif; color: var(--ink); }
-        h1 { font-size: 4rem; letter-spacing: -0.055em; margin: 0; }
-        .eyebrow { color: var(--mineral); font-size: .78rem; font-weight: 700;
-                   letter-spacing: .18em; margin-bottom: .2rem; }
-        .lede { font-family: Georgia, "Times New Roman", serif; font-size: 1.3rem;
-                line-height: 1.5; max-width: 58ch; margin: 0 0 2rem; color: var(--ink); }
-        [data-testid="stMetricValue"], [data-testid="stDataFrame"] {
-          font-variant-numeric: tabular-nums;
-        }
-        [data-testid="stWidgetLabel"] p,
-        [data-testid="stCaptionContainer"] p,
-        [data-testid="stMetricLabel"] p,
-        [data-testid="stMetricValue"] {
-          color: #29483d !important;
-        }
-        div[data-baseweb="select"] > div,
-        [data-testid="stNumberInputContainer"] {
-          background: #fbfaf5 !important;
-          border-color: #9aaa9f !important;
-        }
-        div[data-baseweb="select"] *,
-        [data-testid="stNumberInputContainer"] input {
-          color: #17231f !important;
-        }
-        span[data-baseweb="tag"] { background: #2f705d !important; }
-        span[data-baseweb="tag"] * { color: #f8f5ec !important; }
-        [data-testid="stCheckbox"] [data-checked="true"] {
-          background-color: #176b55 !important;
-          border-color: #176b55 !important;
-        }
-        div[data-testid="stFileUploaderDropzone"] { border-color: var(--line); }
-        .stButton button[kind="primary"], .stFormSubmitButton button[kind="primary"] {
-          background: #176b55 !important;
-          border-color: #176b55 !important;
-          min-height: 2.75rem;
-          border-radius: .2rem;
-        }
-        button[kind="primary"] p { color: #f8f5ec !important; }
-        @media (max-width: 700px) {
-          h1 { font-size: 3rem; }
-          [data-testid="stMainBlockContainer"] { padding-top: 2rem; }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+def _format_error(value: object) -> str:
+    try:
+        number = float(str(value))
+    except (TypeError, ValueError):
+        return "n/a"
+    if not np.isfinite(number):
+        return "n/a"
+    return f"{number:.2%}"
 
 
 if __name__ == "__main__":

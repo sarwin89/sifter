@@ -214,17 +214,24 @@ def _fit_local_windows(
         proposals = _local_proposals(preprocessing.proposals, window)
         if not proposals:
             continue
+        local_max_peaks = min(config.max_peaks, len(window.maxima))
+        local_manual_peak_centers = tuple(
+            center
+            for center in config.manual_peak_centers
+            if window.fit_start <= center <= window.fit_stop
+        )[:local_max_peaks]
         local_config = replace(
             config,
-            max_peaks=min(config.max_peaks, len(window.maxima)),
+            max_peaks=local_max_peaks,
             fourier=False,
+            manual_peak_centers=local_manual_peak_centers,
         )
         candidates = build_candidates_for_counts(
             local,
             proposals,
             None,
             local_config,
-            peak_counts=tuple(range(1, min(config.max_peaks, len(window.maxima)) + 1)),
+            peak_counts=tuple(range(1, local_max_peaks + 1)),
         )
         local_tasks = build_fit_tasks(
             local,

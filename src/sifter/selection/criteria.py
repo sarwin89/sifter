@@ -88,10 +88,13 @@ def score_candidate(
     spectrum: Spectrum,
     *,
     allow_broad_multimax_component: bool = False,
+    allow_budget_exhausted: bool = False,
 ) -> CandidateScore:
     """Convert a fit or failure into one complete comparison row."""
     parameter_count = len(result.spec.lower_bounds)
-    if isinstance(result, CandidateFailure) or result.status != "converged":
+    if isinstance(result, CandidateFailure) or (
+        result.status != "converged" and not allow_budget_exhausted
+    ):
         failure_code = (
             result.code if isinstance(result, CandidateFailure) else "BUDGET_EXHAUSTED"
         )
@@ -166,6 +169,8 @@ def score_candidate(
             else float(np.dot(standardized, standardized) / degrees_of_freedom)
         )
     warnings = () if criteria.aicc is not None else ("AICC_UNDEFINED",)
+    if result.status == "budget_exhausted":
+        warnings = (*warnings, "FAST_APPROXIMATE_FIT")
     structural_warnings = tuple(
         diagnostic.warning_code
         for diagnostic in component_diagnostics

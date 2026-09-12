@@ -28,10 +28,10 @@ def search_policy(mode: SearchMode = "standard") -> SearchPolicy:
             exhaustive=False,
             count_radius=1,
             screening_starts=1,
-            screening_max_nfev=300,
+            screening_max_nfev=80,
             finalist_limit=3,
-            refinement_starts=2,
-            refinement_max_nfev=3_000,
+            refinement_starts=1,
+            refinement_max_nfev=40,
             worsening_limit=1,
         )
     if mode == "standard":

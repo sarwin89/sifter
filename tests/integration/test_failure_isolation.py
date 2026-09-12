@@ -79,8 +79,9 @@ def test_no_rankable_candidate_preserves_rejection_reasons(
         spectrum: Spectrum,
         *,
         allow_broad_multimax_component: bool,
+        allow_budget_exhausted: bool,
     ) -> CandidateScore:
-        del spectrum, allow_broad_multimax_component
+        del spectrum, allow_broad_multimax_component, allow_budget_exhausted
         return CandidateScore(
             spec=result.spec,
             status="inadmissible",

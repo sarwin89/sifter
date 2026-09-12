@@ -5,7 +5,7 @@ from importlib.metadata import version
 
 import numpy as np
 
-from sifter.config import AutofitConfig, PeakCountMode, PeakShape, SearchMode
+from sifter.config import AutofitConfig, FitConfig, FitMode, PeakCountMode, PeakShape, SearchMode
 from sifter.diagnostics import diagnose_fit, residual_diagnostics
 from sifter.execution import build_fit_tasks, execute_fit_tasks
 from sifter.fitting import (
@@ -39,9 +39,17 @@ from sifter.search import (
     screening_failures,
     search_policy,
 )
+from sifter.search.dictionary import screen_peak_dictionary
 from sifter.search.windowing import build_windowed_candidates
-from sifter.selection import CandidateScore, rank_candidates, score_candidate
+from sifter.selection import (
+    CandidateQuality,
+    CandidateScore,
+    rank_candidates,
+    rank_quality_first,
+    score_candidate,
+)
 from sifter.spectrum import Spectrum
+from sifter.workbench import inspect_spectrum
 
 
 class AnalysisError(RuntimeError):
@@ -65,6 +73,108 @@ class AnalysisError(RuntimeError):
             )
         else:
             super().__init__(f"{code}: {len(failures)} candidate fits failed")
+
+
+def fit_spectrum(
+    spectrum: Spectrum,
+    *,
+    config: FitConfig | None = None,
+    progress: ProgressCallback | None = None,
+) -> FitResult:
+    """Run the v0.4.2 workbench fitting path with fast proposal screening."""
+    settings = FitConfig() if config is None else config
+    inspection = inspect_spectrum(spectrum, max_peaks=settings.max_peaks)
+    screened = screen_peak_dictionary(
+        spectrum,
+        inspection.maxima,
+        peak_hints=settings.peak_hints,
+        max_peaks=settings.max_peaks,
+    )
+    screened_centers = tuple(peak.center for peak in screened.peaks)
+    peak_hints = (settings.peak_hints or screened_centers)[: settings.max_peaks]
+    legacy = AutofitConfig(
+        max_peaks=settings.max_peaks,
+        search_mode=_search_mode_for_fit_mode(settings.fit_mode),
+        peak_count_mode=settings.count_mode,
+        shapes=settings.shapes,
+        baseline_orders=(0,),
+        fourier=settings.fourier,
+        interpolate_nonuniform_fft=settings.interpolate_nonuniform_fft,
+        uncertainty="covariance",
+        random_seed=settings.random_seed,
+        workers=settings.workers,
+        allow_broad_multimax_component=settings.allow_broad_multimax_component,
+        manual_peak_centers=peak_hints,
+        measurement_context=settings.measurement_context,
+        reference=settings.reference,
+    )
+    result = autofit(spectrum, config=legacy, progress=progress)
+    candidate_models = _quality_ordered_candidate_models(result)
+    return replace(
+        result,
+        schema_version="sifter.fit_result.v3",
+        candidate_models=candidate_models,
+        settings=replace(
+            result.settings,
+            fit_mode=settings.fit_mode,
+            peak_hints=settings.peak_hints,
+        ),
+    )
+
+
+def _quality_ordered_candidate_models(result: FitResult) -> tuple[ModelResult, ...]:
+    """Return retained candidate models in v0.4.2 user-facing quality order."""
+    if not result.candidate_models:
+        return ()
+    intensity_span = float(np.ptp(result.intensity))
+    normalized_scale = max(intensity_span, np.finfo(float).eps)
+    rows: list[CandidateQuality] = []
+    for index, model in enumerate(result.candidate_models):
+        peak_table = result.to_peak_table(model=model)
+        notes = tuple(str(note) for note in peak_table.get("fit_note", ()))
+        local_errors = np.asarray(peak_table.get("local_area_error", ()), dtype=np.float64)
+        height_errors = np.asarray(peak_table.get("height_error", ()), dtype=np.float64)
+        rows.append(
+            CandidateQuality(
+                candidate_index=index,
+                severe_note_count=sum(note == "check fit" for note in notes),
+                worst_local_area_error=_safe_nanmax(local_errors),
+                median_height_error=_safe_nanmedian(height_errors),
+                normalized_rmse=float(model.rmse) / normalized_scale,
+                peak_count=model.peak_count,
+                bic=model.bic,
+            )
+        )
+    ranked = rank_quality_first(tuple(rows))
+    return tuple(result.candidate_models[row.candidate_index] for row in ranked)
+
+
+def _safe_nanmax(values: np.ndarray) -> float:
+    finite = values[np.isfinite(values)]
+    return float(np.max(finite)) if finite.size else float("inf")
+
+
+def _safe_nanmedian(values: np.ndarray) -> float:
+    finite = values[np.isfinite(values)]
+    return float(np.median(finite)) if finite.size else float("inf")
+
+
+def _search_mode_for_fit_mode(mode: str) -> SearchMode:
+    if mode == "fast":
+        return "fast"
+    if mode == "standard":
+        return "standard"
+    if mode == "thorough":
+        return "thorough"
+    if mode == "research":
+        return "thorough"
+    raise ValueError(f"unsupported fit mode: {mode}")
+
+
+def _fit_mode_for_search_mode(mode: SearchMode) -> FitMode:
+    if mode in {"fast", "standard", "thorough"}:
+        return mode
+    return "research"
 
 
 def autofit(
@@ -261,6 +371,7 @@ def autofit(
             result,
             spectrum,
             allow_broad_multimax_component=settings.allow_broad_multimax_component,
+            allow_budget_exhausted=settings.search_mode == "fast",
         )
         for result in fit_results
     )
@@ -325,6 +436,8 @@ def autofit(
             workers=settings.workers,
             allow_broad_multimax_component=settings.allow_broad_multimax_component,
             manual_peak_centers=settings.manual_peak_centers,
+            fit_mode=_fit_mode_for_search_mode(settings.search_mode),
+            peak_hints=settings.manual_peak_centers,
             measurement_context=settings.measurement_context,
             reference=settings.reference,
         ),
