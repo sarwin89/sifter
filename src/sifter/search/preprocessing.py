@@ -115,22 +115,30 @@ def _merge_manual_peak_centers(
         else max(5.0 * proposal_spectrum.grid.median_step, np.finfo(float).eps)
     )
     detected_prominence = max((proposal.prominence for proposal in proposals), default=0.0)
-    manual = tuple(
-        PeakProposal(
-            center=float(center),
-            width=detected_width,
-            prominence=max(
-                float(
-                    np.interp(
-                        center,
-                        proposal_spectrum.x,
-                        proposal_spectrum.intensity,
-                    )
+    manual_items: list[PeakProposal] = []
+    for center in config.manual_peak_centers:
+        if any(
+            abs(center - proposal.center)
+            <= max(3.0 * proposal_spectrum.grid.median_step, 0.25 * proposal.width)
+            for proposal in proposals
+        ):
+            continue
+        manual_items.append(
+            PeakProposal(
+                center=float(center),
+                width=detected_width,
+                prominence=max(
+                    float(
+                        np.interp(
+                            center,
+                            proposal_spectrum.x,
+                            proposal_spectrum.intensity,
+                        )
+                    ),
+                    detected_prominence + np.finfo(float).eps,
                 ),
-                detected_prominence + np.finfo(float).eps,
-            ),
-            sources=frozenset({"manual"}),
+                sources=frozenset({"manual"}),
+            )
         )
-        for center in config.manual_peak_centers
-    )
+    manual = tuple(manual_items)
     return tuple(sorted((*proposals, *manual), key=lambda proposal: proposal.center))

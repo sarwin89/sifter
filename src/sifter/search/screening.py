@@ -140,6 +140,7 @@ def refine_finalists(
         seed=seed,
         max_nfev=policy.refinement_max_nfev,
         initial_parameters=initial_parameters,
+        allow_budget_exhausted=policy.mode == "fast",
     )
     return execute_fit_tasks(
         tasks,
